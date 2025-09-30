@@ -9,12 +9,15 @@ obj/
 *.dll
 
 # Unity / Unreal / other game‑engine specific ignores
+<<<<<<< HEAD
 client/*/__pycache__
 client/__pycache__
 core/__pycache__
 core/*/__pycache__
 utils/__pycache__
 game_venv/
+=======
+>>>>>>> ee48eee (initial commit - existing game files)
 Library/
 Temp/
 *.csproj

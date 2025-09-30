@@ -1,5 +1,6 @@
 """
 DW Reference: N/A (setup).
+<<<<<<< HEAD
 Purpose: Central configs from yaml for easy customization.
 Dependencies: pyyaml.
 Ext Hooks: Add game modes.
@@ -32,3 +33,13 @@ AUTO_ATTACK_INTERVAL = config['combat']['auto_attack_interval']
 DICE_SIDES = config['combat']['dice_sides']
 
 HEX_SIZE = 50  # Can move to yaml if needed
+=======
+Purpose: Configs for ticks/hexes.
+Dependencies: None.
+Ext Hooks: Add game modes.
+"""
+
+TICK_TIME = 3.0
+HEX_SIZE = 50
+SERVER_URL = "http://localhost:5000"
+>>>>>>> ee48eee (initial commit - existing game files)

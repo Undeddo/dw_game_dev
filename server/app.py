@@ -11,7 +11,11 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from flask import Flask, request, jsonify
+<<<<<<< HEAD
 from core.pathfinding.a_star import a_star
+=======
+from utils.pathfinding import a_star
+>>>>>>> ee48eee (initial commit - existing game files)
 from client.map.tile import Tile
 
 app = Flask(__name__)
