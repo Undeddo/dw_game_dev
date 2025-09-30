@@ -1,0 +1,15 @@
+# OS generated files
+Thumbs.db
+.DS_Store
+
+# Build artefacts
+bin/
+obj/
+*.exe
+*.dll
+
+# Unity / Unreal / other game‑engine specific ignores
+Library/
+Temp/
+*.csproj
+*.sln
