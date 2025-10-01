@@ -20,7 +20,10 @@ from core.config import TICK_TIME, SERVER_URL
 from utils.pathfinding import a_star
 from utils.hex_utils import hex_distance
 from utils.draw_utils import draw_sand_clock
+from utils.draw_combat_ui import draw_combat_ui
+from utils.dice import roll_d6
 from client.render.character_renderer import CharacterRenderer
+from client.enemy import Enemy
 
 pygame.font.init()
 font = pygame.font.SysFont('Arial', 24)
@@ -39,6 +42,24 @@ clock = pygame.time.Clock()
 # Game objects
 grid = HexGrid(size=10, hex_size=50)
 char_renderer = CharacterRenderer()
+enemies = [
+    Enemy(start_pos=(0, 1), mv_limit=6),
+    Enemy(start_pos=(1, 3), mv_limit=6),
+]  # Multiple enemies for more challenge
+
+# Debug: Check grid state
+print(f"Grid size: {grid.size}, hex_size: {grid.hex_size}")
+print(f"Total tiles: {len(grid.tiles)}")
+blocked_count = sum(1 for tile in grid.tiles.values() if tile.blocked)
+print(f"Blocked tiles: {blocked_count}")
+print(f"Player start position: {char_pos}")
+print(f"Enemy start positions: {[enem.pos for enem in enemies]}")
+player_hp = 10  # Basic player HP (adjust mechanics later)
+enemy_max_hp = 10
+goal_pos = (9, 9)  # Quest goal hex (references hex_grid size; player wins by reaching)
+win_message = ""  # Win message to display
+win_message_time = 0.0
+WIN_DURATION = 10.0  # Display win longer
 char_pos = [0, 0]  # Current (q, r) as int list
 char_screen_pos = [screen.get_width() // 2, screen.get_height() // 2]  # Screen position
 queued_path = []  # List of (q,r)
@@ -66,6 +87,8 @@ last_start_time = time.time()
 last_cr_start = time.time()
 combat_round = 0
 planned_path = None
+attack_indicators = []  # List of (attacker_pos, victim_pos, start_time)
+last_auto_attack = 0.0  # Timestamp for last auto attack by player
 
 def validate_path_async(data):
     """Async validation for exploration mode."""
@@ -141,6 +164,41 @@ def hex_to_screen(q, r, size, screen):
     return (int(x + screen.get_width() // 2), int(y + screen.get_height() // 2))
 
 
+def get_closest_enemy(char_pos, enemies):
+    closest = None
+    min_dist = float('inf')
+    for enem in enemies:
+        dist = hex_distance(char_pos[0], char_pos[1], enem.pos[0], enem.pos[1])
+        if dist < min_dist and enem.hp > 0:
+            min_dist = dist
+            closest = enem
+    return closest
+
+
+def draw_health_bar(screen, x, y, current, max_hp, width=50, height=5):
+    bar_x = x - width // 2
+    bar_y = y - 50
+    pygame.draw.rect(screen, (255, 0, 0), (bar_x, bar_y, width, height))  # Red bg
+    if max_hp > 0:
+        health_pct = current / max_hp
+        pygame.draw.rect(screen, (0, 255, 0), (bar_x, bar_y, width * health_pct, height))  # Green fg
+
+
+def draw_attack_arrow(screen, attacker_pos, victim_pos, color=(255, 255, 255)):
+    pygame.draw.line(screen, color, attacker_pos, victim_pos, 3)
+    dx = victim_pos[0] - attacker_pos[0]
+    dy = victim_pos[1] - attacker_pos[1]
+    length = math.hypot(dx, dy)
+    if length == 0:
+        return
+    dx /= length
+    dy /= length
+    arrow_tip = victim_pos
+    p1 = (arrow_tip[0] - dx * 10 - dy * 5, arrow_tip[1] - dy * 10 + dx * 5)
+    p2 = (arrow_tip[0] - dx * 10 + dy * 5, arrow_tip[1] - dy * 10 - dx * 5)
+    pygame.draw.polygon(screen, color, [arrow_tip, p1, p2])
+
+
 
 running = True
 while running:
@@ -148,6 +206,12 @@ while running:
     current_time = time.time()
 
     char_renderer.update(dt, is_moving)
+
+    # Update enemy screen positions only if not currently moving (to avoid overriding LERP movement)
+    for enem in enemies:
+        if enem.hp > 0 and not enem.is_moving:
+            enemy_screen_pos = hex_to_screen(enem.pos[0], enem.pos[1], grid.hex_size, screen)
+            enem.set_screen_pos(enemy_screen_pos)
 
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
@@ -183,10 +247,23 @@ while running:
                     # Calculate path from current position or end of round if moving
                     start_hex = tuple(queued_path[-1]) if is_moving and queued_path else tuple(char_pos)
                     local_mv_limit = mv_limit
+                    # Block living enemy hexes to prevent occupation (DW: hexes occupied by one entity)
+                    for enem in enemies:
+                        if enem.hp > 0:
+                            enemy_hex = tuple(enem.pos)
+                            grid.tiles[enemy_hex].blocked = True
                     path = a_star(start_hex, goal, grid.tiles, local_mv_limit)
+                    for enem in enemies:  # Reset
+                        if enem.hp > 0:
+                            enemy_hex = tuple(enem.pos)
+                            grid.tiles[enemy_hex].blocked = False
                     if path:
                         grid.set_path_highlight(path)
                         planned_path = path
+                        # Have enemies start their turn simultaneously in combat
+                        for enem in enemies:
+                            if enem.hp > 0:
+                                enem.take_turn(char_pos, grid.tiles)
                         data = {"action": "move_path", "start": start_hex, "goal": tuple(goal), "grid": grid.get_grid_state(), "game_mode": game_mode}
                         validation_thread = threading.Thread(target=validate_combat_path_async, args=(path, data))
                         validation_thread.daemon = True
@@ -234,6 +311,11 @@ while running:
             char_pos = list(target_hex)
             current_path_index += 1
             print(f"Reached target hex: {target_hex}")
+            # Check for win condition (quest goal; references enemy.hp for later defeat)
+            if tuple(char_pos) == goal_pos and not win_message:
+                win_message = "Victory! You reached the goal hex!"
+                win_message_time = current_time
+                print("Player wins!")
         else:
             # LERP towards target
             t = min(1.0, (MOVE_SPEED * dt) / dist)
@@ -245,6 +327,53 @@ while running:
         queued_path = []
         current_path_index = 0
         is_moving = False  # No longer moving
+        # Attack if adjacent (melee only for now)
+        if game_mode == 'combat':
+            closest = get_closest_enemy(char_pos, enemies)
+            if closest:
+                dist = hex_distance(char_pos[0], char_pos[1], closest.pos[0], closest.pos[1])
+                if dist == 1:
+                    damage = roll_d6()
+                    msg = f"Player melee attack on enemy for {damage}!"
+                    closest.hp -= damage
+                    attack_indicators.append((tuple(char_screen_pos), tuple(closest.screen_pos), current_time))
+                    print(f"{msg} Enemy HP: {closest.hp}")
+                    if closest.hp <= 0:
+                        closest.pos = [-999, -999]
+                        print("Enemy dies!")
+
+    # Enemy path-following movement and attacks
+    for enem in enemies:
+        if enem.hp > 0:
+            # Update enemy movement if they have a path
+            if enem.is_moving and enem.queued_path and enem.current_path_index < len(enem.queued_path):
+                print(f"Enemy {enem.pos} moving: path={enem.queued_path}, index={enem.current_path_index}")
+                enemy_path_complete = enem.update_movement(grid.hex_size, screen, MOVE_SPEED, dt)
+
+                # Update enemy screen position after movement
+                if enem.current_path_index < len(enem.queued_path):
+                    enemy_screen_pos = hex_to_screen(enem.pos[0], enem.pos[1], grid.hex_size, screen)
+                    enem.set_screen_pos(enemy_screen_pos)
+
+                # Attack if path complete and within range
+                if enemy_path_complete and enem.hp > 0:
+                    dist = hex_distance(enem.pos[0], enem.pos[1], char_pos[0], char_pos[1])
+                    if dist == 1:
+                        damage = roll_d6()
+                        msg = f"Enemy melee attack for {damage}!"
+                    elif dist <= 3:
+                        damage = max(0, roll_d6() - (dist - 1))
+                        msg = f"Enemy ranged attack for {damage} (distance {dist})!"
+                    else:
+                        damage = None
+                    if damage:
+                        player_hp -= damage
+                        attack_indicators.append((tuple(enem.screen_pos), tuple(char_screen_pos), current_time))
+                        print(f"{msg} Player HP: {player_hp}")
+                        if player_hp <= 0:
+                            win_message = "Defeated... Game Over!"
+                            win_message_time = current_time
+                            print("Player dies!")
 
     # Combat round tick: advance timer and start planned movement if applicable
     if game_mode == 'combat' and (current_time - last_cr_start >= TICK_TIME):
@@ -257,12 +386,94 @@ while running:
             planned_path = None
             grid.set_path_highlight(queued_path)  # Ensure highlighted
             print("Combat CR tick: started planned movement")
+        # Enemy takes turn after player (references DW turn-based, alternating)
+        for enem in enemies:
+            if enem.hp > 0:
+                enem.take_turn(char_pos, grid.tiles)
         # CR advances even if no planned movement (no action)
+
+        # Auto attack for player in combat if adjacent to enemy and not moving (melee only)
+        if not is_moving and current_time - last_auto_attack > 2.0:
+            closest = get_closest_enemy(char_pos, enemies)
+            if closest:
+                dist = hex_distance(char_pos[0], char_pos[1], closest.pos[0], closest.pos[1])
+                if dist == 1:  # Melee only
+                    damage = roll_d6()
+                    if damage:
+                        closest.hp -= damage
+                        attack_indicators.append((tuple(char_screen_pos), tuple(closest.screen_pos), current_time))
+                        print(f"Auto attack on enemy for {damage}! Enemy HP: {closest.hp}")
+                        if closest.hp <= 0:
+                            closest.pos = [-999, -999]
+                            print("Enemy dies!")
+                        last_auto_attack = current_time
+
+    # Enemy AI: Make enemies continuously chase the player
+    for enem in enemies:
+        if enem.hp > 0:
+            print(f"Enemy {enem.pos}: is_moving={enem.is_moving}, has_path={bool(enem.queued_path)}, path_length={len(enem.queued_path) if enem.queued_path else 0}")
+            # Check if enemy should recalculate path (every few seconds or if no path)
+            current_time = time.time()
+            should_recalculate = (
+                not enem.queued_path or  # No path
+                current_time - getattr(enem, 'last_path_calc', 0) > 2.0 or  # Recalculate every 2 seconds
+                (enem.is_moving and current_time - getattr(enem, 'last_path_calc', 0) > 1.0)  # More frequent recalculation while moving
+            )
+
+            if should_recalculate:
+                dist_to_player = hex_distance(enem.pos[0], enem.pos[1], char_pos[0], char_pos[1])
+                print(f"Enemy {enem.pos} recalculating path - dist to player: {dist_to_player}")
+                if dist_to_player <= 15:  # Within reasonable chase distance
+                    enem.last_path_calc = current_time
+                    enem.take_turn(char_pos, grid.tiles)
     # Draw
     screen.fill((0, 0, 0))
     grid.draw(screen)
 
     char_renderer.draw_character(screen, int(char_screen_pos[0]), int(char_screen_pos[1]))
+
+    # Draw enemies
+    for enem in enemies:
+        if enem.hp > 0:
+            enem.draw(screen, dt)
+
+    # Draw health bars
+    draw_health_bar(screen, int(char_screen_pos[0]), int(char_screen_pos[1]), player_hp, 10)
+    for enem in enemies:
+        if enem.hp > 0:
+            draw_health_bar(screen, int(enem.screen_pos[0]), int(enem.screen_pos[1]), enem.hp, enem.max_hp)
+
+    # Draw attack indicators
+    for attacker_pos, victim_pos, start_time in attack_indicators.copy():
+        if current_time - start_time > 5:
+            attack_indicators.remove((attacker_pos, victim_pos, start_time))
+        else:
+            # Check if this is an enemy attack (based on position matching an enemy)
+            is_enemy_attack = False
+            for enem in enemies:
+                if enem.hp > 0 and tuple(enem.screen_pos) == attacker_pos:
+                    is_enemy_attack = True
+                    enem.renderer.draw_attack_arrow(screen, attacker_pos, victim_pos, color=(255, 100, 100))
+                    break
+            
+            # If not an enemy attack, draw with default method
+            if not is_enemy_attack:
+                draw_attack_arrow(screen, attacker_pos, victim_pos, color=(200, 200, 200))
+
+
+
+    # Draw quest goal star (yellow polygon; references hex_to_screen)
+    goal_screen = hex_to_screen(goal_pos[0], goal_pos[1], grid.hex_size, screen)
+    pygame.draw.polygon(screen, (255, 255, 0), [  # Yellow star for goal
+        (goal_screen[0], goal_screen[1] - 15),
+        (goal_screen[0] + 6, goal_screen[1] - 5),
+        (goal_screen[0] + 15, goal_screen[1] + 2),
+        (goal_screen[0] + 6, goal_screen[1] + 9),
+        (goal_screen[0], goal_screen[1] + 15),
+        (goal_screen[0] - 6, goal_screen[1] + 9),
+        (goal_screen[0] - 15, goal_screen[1] + 2),
+        (goal_screen[0] - 6, goal_screen[1] - 5),
+    ])
 
     # Draw combat sand clock and round counter
     if game_mode == 'combat':
@@ -272,11 +483,21 @@ while running:
         progress = elapsed / TICK_TIME
         draw_sand_clock(screen, clock_x, clock_y, size, progress, font, combat_round)
 
+        # Draw combat UI (HP bars, engagement highlights; references draw_sand_clock for consistent draw order)
+        # Commented out for multiple enemies - need to update the UI to handle list
+        # draw_combat_ui(screen, font, player_hp, 10, enemy.hp, enemy_max_hp, tuple(char_pos), tuple(enemy.pos), tuple(char_screen_pos), tuple(enemy.screen_pos))
+
     # Draw rejected message if active
     if rejected_message and (current_time - rejected_message_time < MESSAGE_DURATION):
         rejected_text_surface = font.render(rejected_message, True, (255, 0, 0)) # Red text
         text_rect = rejected_text_surface.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 100))
         screen.blit(rejected_text_surface, text_rect)
+
+    # Draw win message if active (references rejected_message display)
+    if win_message and (current_time - win_message_time < WIN_DURATION):
+        win_text_surface = font.render(win_message, True, (0, 255, 0)) # Green text
+        text_rect = win_text_surface.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 150))
+        screen.blit(win_text_surface, text_rect)
 
     # Draw tutorial text
     mode_text = font.render(f"Mode: {game_mode} (E: exploration, C: combat)", True, (255, 255, 255))
