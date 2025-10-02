@@ -16,7 +16,7 @@ import time
 import math
 import threading
 from client.map.hex_grid import HexGrid
-from core.config import TICK_TIME, SERVER_URL
+from core.config import TICK_TIME, SERVER_URL, ENEMY_RANGED_ATTACK_ENABLED
 from utils.pathfinding import a_star
 from utils.hex_utils import hex_distance
 from utils.draw_utils import draw_sand_clock
@@ -46,6 +46,7 @@ enemies = [
     Enemy(start_pos=(0, 1), mv_limit=6),
     Enemy(start_pos=(1, 3), mv_limit=6),
 ]  # Multiple enemies for more challenge
+char_pos = [0, 0]  # Current (q, r) as int list
 
 # Debug: Check grid state
 print(f"Grid size: {grid.size}, hex_size: {grid.hex_size}")
@@ -60,7 +61,6 @@ goal_pos = (9, 9)  # Quest goal hex (references hex_grid size; player wins by re
 win_message = ""  # Win message to display
 win_message_time = 0.0
 WIN_DURATION = 10.0  # Display win longer
-char_pos = [0, 0]  # Current (q, r) as int list
 char_screen_pos = [screen.get_width() // 2, screen.get_height() // 2]  # Screen position
 queued_path = []  # List of (q,r)
 current_path_index = 0
@@ -129,8 +129,7 @@ def validate_combat_path_async(path, data):
             result = resp.json()
             approved_path = [tuple(p) for p in result.get("approved_path", [])]
             if approved_path:
-                # Update if server's approved path differs from local (unlikely but possible)
-                if approved_path != planned_path:
+                if planned_path is not None and approved_path != planned_path:
                     grid.set_path_highlight(approved_path)
                     planned_path = approved_path
                     print("Combat path approved, updated.")
@@ -217,6 +216,8 @@ while running:
         if event.type == pygame.QUIT:
             running = False
         elif event.type == pygame.MOUSEBUTTONDOWN:
+            if player_hp <= 0:
+                continue  # Dead, no movement or planning
             mouse_pos = pygame.mouse.get_pos()
             goal = grid.get_hex_at_mouse(mouse_pos, screen)
             if goal:
@@ -244,8 +245,10 @@ while running:
                     else:
                         print("No path found!")
                 else:  # Combat mode
-                    # Calculate path from current position or end of round if moving
-                    start_hex = tuple(queued_path[-1]) if is_moving and queued_path else tuple(char_pos)
+                    if is_moving:
+                        continue  # Can't plan new move during movement
+                    # Calculate path from current position
+                    start_hex = tuple(char_pos)
                     local_mv_limit = mv_limit
                     # Block living enemy hexes to prevent occupation (DW: hexes occupied by one entity)
                     for enem in enemies:
@@ -300,6 +303,10 @@ while running:
             rejected_path = []
 
     # Path-following movement
+    if player_hp <= 0:
+        is_moving = False
+        queued_path = []
+        current_path_index = 0
     if is_moving and queued_path and current_path_index < len(queued_path):
         target_hex = queued_path[current_path_index]
         target_screen = hex_to_screen(target_hex[0], target_hex[1], grid.hex_size, screen)
@@ -361,7 +368,7 @@ while running:
                     if dist == 1:
                         damage = roll_d6()
                         msg = f"Enemy melee attack for {damage}!"
-                    elif dist <= 3:
+                    elif dist <= 3 and ENEMY_RANGED_ATTACK_ENABLED:
                         damage = max(0, roll_d6() - (dist - 1))
                         msg = f"Enemy ranged attack for {damage} (distance {dist})!"
                     else:
@@ -389,7 +396,29 @@ while running:
         # Enemy takes turn after player (references DW turn-based, alternating)
         for enem in enemies:
             if enem.hp > 0:
-                enem.take_turn(char_pos, grid.tiles)
+                enem.take_turn(char_pos, grid.tiles, attack_enabled=True)
+
+        # Handle enemy attacks on their turn
+        for enem in enemies:
+            if enem.hp > 0 and enem.attack_this_turn:
+                enem.attack_this_turn = False  # Reset flag
+                dist = hex_distance(enem.pos[0], enem.pos[1], char_pos[0], char_pos[1])
+                if dist == 1:
+                    damage = roll_d6()
+                    msg = f"Enemy melee attack for {damage}!"
+                elif dist <= 3 and ENEMY_RANGED_ATTACK_ENABLED:
+                    damage = max(0, roll_d6() - (dist - 1))
+                    msg = f"Enemy ranged attack for {damage} (distance {dist})!"
+                else:
+                    damage = None
+                if damage:
+                    player_hp -= damage
+                    attack_indicators.append((tuple(enem.screen_pos), tuple(char_screen_pos), current_time))
+                    print(f"{msg} Player HP: {player_hp}")
+                    if player_hp <= 0:
+                        win_message = "Defeated... Game Over!"
+                        win_message_time = current_time
+                        print("Player dies!")
         # CR advances even if no planned movement (no action)
 
         # Auto attack for player in combat if adjacent to enemy and not moving (melee only)
@@ -431,6 +460,13 @@ while running:
     grid.draw(screen)
 
     char_renderer.draw_character(screen, int(char_screen_pos[0]), int(char_screen_pos[1]))
+
+    # Draw death overlay if player is dead
+    if player_hp <= 0:
+        dead_overlay = pygame.Surface((32, 32))
+        dead_overlay.fill((100, 100, 100))
+        dead_overlay.set_alpha(150)
+        screen.blit(dead_overlay, (int(char_screen_pos[0] - 16), int(char_screen_pos[1] - 16)))
 
     # Draw enemies
     for enem in enemies:

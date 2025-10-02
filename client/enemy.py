@@ -159,13 +159,16 @@ class Enemy:
         y = size * math.sqrt(3) * (r + q/2)
         return (int(x + screen.get_width() // 2), int(y + screen.get_height() // 2))
 
-    def take_turn(self, player_pos, grid_tiles):
+    def take_turn(self, player_pos, grid_tiles, attack_enabled=False):
         """
         Enemy turn: Decide behavior and calculate AI path (references game.py combat tick).
         - Behavior logic: Retreat if low HP, chase if close, patrol if far.
         - References: game.py combat round advance ('start planned movement').
         - Purpose: Dynamic AI for more engaging gameplay.
         """
+        # Reset attack flag
+        self.attack_this_turn = False
+
         # Decide behavior
         dist = hex_distance(self.pos[0], self.pos[1], player_pos[0], player_pos[1])
         if self.hp <= self.retreat_threshold:
@@ -178,6 +181,10 @@ class Enemy:
         self.targeting_player = (behavior == 'chase')  # Target if chasing player
 
         print(f"Enemy at {self.pos} taking turn - dist to player: {dist}, behavior: {behavior}")
+
+        # If adjacent and attacks enabled, attack instead of moving
+        if attack_enabled and dist <= 3:
+            self.attack_this_turn = True
 
         if behavior == 'chase':
             # Simple direct movement towards player for testing
