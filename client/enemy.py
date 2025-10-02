@@ -9,8 +9,8 @@ Grand Scheme: Granular enemy logic class, keeping game.py lean. Manages path cal
 
 import math
 from client.render.enemy_renderer import EnemyRenderer
-from utils.pathfinding import a_star
-from utils.hex_utils import hex_distance
+from core.pathfinding.a_star import a_star
+from core.hex.utils import hex_distance
 
 class Enemy:
     def __init__(self, start_pos=(5, 5), mv_limit=6, behavior='chase', grid_hex_size=50, screen=None):

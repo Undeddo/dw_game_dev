@@ -1,0 +1,392 @@
+
+## Quick TL;DR
+- **What’s already solid**: Clear core loop, sensible hex‑grid math, nice separation of client vs. server validation, well‑thought‑out combat tick, and a decent UI sketch.  
+- **Where the risks lie**: Monolithic `game.py`, hidden magic numbers, limited error handling for the network layer, and a few UX/AI edge‑cases that could bite you later.  
+- **What to do next**: Break the monolith into purposeful modules, formalize the configuration system, add type‑hints & data‑classes, introduce a small test harness, and tighten the client‑server contract.
+
+Below is a **section‑by‑section review** followed by an **actionable refactor roadmap**.
+
+---  
+
+## 1. Gameplay Design Review  
+
+### 1.1 Core Movement System
+| ✅ Good | ⚠️ Concern |
+|--------|------------|
+| Uses axial coordinates → easy to implement distance & neighbor calculations. | LERP speed is hard‑coded (`100 px/s`). If you ever change tile size or DPI scaling you’ll need to recalc. |
+| A* with movement‑limit (`MV`) → classic and efficient. | No mention of heuristics for hex‑grid (Manhattan vs. Euclidean). A poor heuristic can make pathfinding slower on larger maps. |
+| Path validation on the server → prevents cheating. | “Offline fallback” uses the *local* path **without** re‑checking for illegal moves. In a peer‑to‑peer or loss‑of‑connection scenario the client could still move illegally. Consider a lightweight local validator that mirrors the server logic. |
+
+**Suggestion**: Wrap the path‑finding logic in a `PathPlanner` class that exposes:
+```python
+class PathPlanner:
+    def __init__(self, grid: HexGrid, mv_limit: int):
+        ...
+
+    def find_path(self, src: Hex, dst: Hex) -> List[Hex]:
+        ...
+
+    def validate_path(self, path: List[Hex]) -> bool:
+        ...
+```
+Both client and server can import the same class (or a pure‑Python copy) to guarantee identical behavior.
+
+---
+
+### 1.2 Game Modes
+| ✅ Good | ⚠️ Concern |
+|--------|------------|
+| Explicit mode switches (`E`/`C`) + visual cue (sand‑clock). | Switching while a combat tick is mid‑execution could cause race conditions (e.g., a queued path fires in the wrong mode). |
+| “Free movement” in exploration (MV = 99) makes early testing painless. | 99 is magic; you might later want a true “unbounded” flag. |
+
+**Suggestion**: Store the current mode in an enum (`GameMode.EXPLORATION | GameMode.COMBAT`) and gate all input handling behind the enum. When you transition, flush any pending actions that don’t make sense in the new mode.
+
+---
+
+### 1.3 Player & Enemy Mechanics
+| ✅ Good | ⚠️ Concern |
+|--------|------------|
+| Simple HP/Damage model → easy to balance. | Damage is just `d6`; no critical hit, no armor, no status effects—might feel shallow after a few minutes. |
+| Enemy AI states (chase, patrol, retreat) are a solid foundation. | AI uses **distance** = 1 to decide “adjacent”. On a hex grid you need *hex distance* (max of |dq|,|dr|,|dq+dr|). If you accidentally use Manhattan distance you’ll get diagonal bugs. |
+| Ranged attack formula (`d6 - (dist‑1)`) scales nicely. | It can become negative damage if `dist` > 6 and `ENEMY_RANGED_ATTACK_ENABLED` is accidentally left `True`. Add `max(0, …)` clamping. |
+| Config flag for ranged attack → good feature toggle. | All other ability toggles (e.g., “auto‑attack every 2 s”) are hard‑coded. Prefer to expose them in `core/config.py` (or a JSON/YAML file). |
+
+**Suggestion**: Create **dataclasses** for actors:
+
+```python
+@dataclass
+class Actor:
+    id: str
+    hp: int
+    max_hp: int
+    mv: int
+    position: Hex
+    sprite: pygame.Surface
+
+@dataclass
+class Player(Actor):
+    auto_attack_interval: float = 2.0
+    ...
+
+@dataclass
+class Enemy(Actor):
+    ai_state: EnemyState = EnemyState.PATROL
+    ranged_enabled: bool = False
+    ...
+```
+
+This makes serialization for the server simple and keeps the code tidy.
+
+---
+
+### 1.4 Combat Round Structure
+| ✅ Good | ⚠️ Concern |
+|--------|------------|
+| Fixed tick (`TICK_TIME = 3.0 s`) → deterministic. | The tick is a **hard block**: any heavy computation (path‑finding for many enemies) will stall the UI for the whole duration. |
+| Player auto‑attack runs on a separate timer (2 s). | Overlap between combat tick and auto‑attack timer could cause double‑damage or missed attacks if you’re not careful with the timing logic. |
+
+**Suggestion**: Use an **event queue** rather than “run everything each tick”. Example:
+
+```python
+class Scheduler:
+    def schedule(self, delay: float, callback: Callable, *args, **kwargs): ...
+
+# Player move scheduled at tick_end
+# Enemy move scheduled at tick_end
+# Auto‑attack scheduled every 2 s (independent of tick)
+```
+
+The main loop then just advances the clock and executes due callbacks. This decouples timing and makes it easier to add future abilities (e.g., “delay attack for 1 s”).
+
+---
+
+### 1.5 Terrain Types
+| ✅ Good | ⚠️ Concern |
+|--------|------------|
+| Simple enumeration (plain/forest/wall) → easy to extend. | No actual modifiers are implemented yet (e.g., forest slows MV). If you later add them, you’ll need to recompute path costs on the fly, which might conflict with the current “MV = 99” exploration mode. |
+| Random generation percentages are stated. | No guarantee that a reachable path from start to goal exists; you may generate a wall‑filled barrier. |
+
+**Suggestion**: Add a **grid validation step** after generation:
+
+```python
+def ensure_reachable(grid: HexGrid, start: Hex, goal: Hex) -> None:
+    if not a_star(start, goal, grid, ignore_walls=False):
+        raise RuntimeError("Generated map is not solvable")
+```
+
+If you need procedural maps, you can keep regenerating until the check passes.
+
+---
+
+### 1.6 UI Elements
+| ✅ Good | ⚠️ Concern |
+|--------|------------|
+| Health‑bars, attack indicators, sand‑clock give useful feedback. | “Messages” appear as raw text (red/green) with no fade‑out logic shown – could clutter the screen after many rejections. |
+| Path highlight in yellow – clear visual language. | No UI for *pause* or *debug overlay* (e.g., show hex coordinates, AI state). Useful during development. |
+
+**Suggestion**: Create a small **UI manager** that groups related draw calls and holds transient messages in a list with TTL (time‑to‑live). Example:
+
+```python
+class UIMessage:
+    def __init__(self, text, color, duration=2.0):
+        self.text = text
+        self.color = color
+        self.expire_at = pygame.time.get_ticks() + duration * 1000
+
+class UIManager:
+    def add_message(self, msg: UIMessage): ...
+    def draw(self, surface): ...
+```
+
+---
+
+### 1.7 Server Integration
+| ✅ Good | ⚠️ Concern |
+|--------|------------|
+| POST `/api/move_path` → clean REST contract. | No mention of authentication / session handling. A malicious client could send a path for *any* player ID. |
+| Offline fallback keeps the game playable. | As noted earlier, fallback bypasses validation, opening a cheat vector. |
+| Rejection feedback (flash red) is user‑friendly. | No retry/back‑off strategy – if the server is temporarily overloaded you’ll keep spamming. |
+
+**Suggestion**:  
+1. **Add a tiny token** (e.g., JWT or simple UUID) that the client receives after login/initial handshake and includes in each request.  
+2. **Mirror validation** on the client (same logic as the server but with a fast “dry‑run”). If the server is down, you still enforce the same rules.  
+3. Use **`requests`** (or `httpx` if you need async) with exponential back‑off.  
+
+```python
+def post_path(path):
+    for attempt in range(5):
+        try:
+            r = requests.post(API_URL, json=payload, timeout=1)
+            r.raise_for_status()
+            return r.json()
+        except (requests.RequestException, json.JSONDecodeError):
+            time.sleep(2 ** attempt)  # exponential back‑off
+    # final fallback: local validation
+    return {"approved": local_validate(path)}
+```
+
+---
+
+## 2. Architectural & Code‑Structure Feedback  
+
+### 2.1 File Size & Modularity
+The README already warns that `client/game.py` exceeds 600 lines. Large monoliths tend to:
+
+1. **Obscure responsibilities** – input, physics, rendering, and networking all live together.  
+2. **Hinder testing** – you can’t unit‑test rendering without pulling the whole game loop in.  
+3. **Make onboarding painful** – new contributors must scan thousands of lines to find the entry point.
+
+#### Recommended Module Layout
+
+```
+/project_root
+│
+├─ client/
+│   ├─ __init__.py
+│   ├─ game.py                 # thin bootstrap (creates GameEngine)
+│   ├─ engine.py               # main loop, mode switching, clock
+│   ├─ input/
+│   │   ├─ __init__.py
+│   │   └─ handler.py          # maps pygame events -> Commands
+│   ├─ rendering/
+│   │   ├─ __init__.py
+│   │   ├─ core.py             # draws grid, hexes, UI manager
+│   │   └─ sprites.py          # loads/creates pygame.Surface assets
+│   ├─ actors/
+│   │   ├─ __init__.py
+│   │   ├─ base.py             # Actor, Player, Enemy dataclasses
+│   │   └─ ai.py               # Enemy AI state machine
+│   ├─ combat/
+│   │   ├─ __init__.py
+│   │   ├─ scheduler.py        # tick/timer handling
+│   │   └─ resolver.py         # process combat round logic
+│   └─ network/
+│       ├─ __init__.py
+│       └─ client.py           # HTTP wrapper, fallback logic
+│
+├─ core/
+│   ├─ __init__.py
+│   ├─ config.py               # Central constants / feature flags
+│   ├─ hex/
+│   │   ├─ __init__.py
+│   │   ├─ grid.py             # HexGrid class, generation, neighbours
+│   │   └─ utils.py            # axial distance, conversion to pixel
+│   └─ pathfinding/
+│       ├─ __init__.py
+│       └─ a_star.py           # generic A* implementation, accepts cost fn
+│
+├─ server/
+│   ├─ __init__.py
+│   ├─ app.py                  # Flask entry point
+│   ├─ validation.py           # route /api/move_path implementation
+│   └─ models.py               # optional Pydantic schemas
+│
+├─ tests/
+│   ├─ __init__.py
+│   ├─ test_hex.py
+│   ├─ test_pathfinding.py
+│   ├─ test_combat.py
+│   └─ test_network.py
+│
+├─ requirements.txt
+├─ README.md
+└─ pyproject.toml
+```
+
+**Why this helps**
+
+- **Separation of concerns** – each sub‑package does one thing; you can import only what you need.  
+- **Testability** – you can unit‑test `hex.grid`, `pathfinding.a_star`, `combat.scheduler`, etc., without spinning up a Pygame window.  
+- **Configuration centralization** – `core/config.py` becomes the single source of truth; you can also load a `config.yaml` at runtime for easy tweaking.  
+- **Future extensibility** – Adding a “spell system” would just be another sub‑package (`spells/`) without touching the engine code.
+
+---
+
+### 2.2 Configurability
+
+Your README says *“Make most features and perks configurable.”*  
+
+**Implementation ideas**
+
+| Feature | Where to store | Example |
+|---------|----------------|---------|
+| `MV` values per mode | `core/config.py` or `config.yaml` | `PLAYER_MV_EXPLORATION: 99` |
+| Enemy AI thresholds (chase distance, retreat HP %) | config file | `ENEMY_CHASE_DISTANCE: 10` |
+| UI colours (hex fill, path highlight) | JSON / YAML | `COLORS: {plain: "#88ff88", forest: "#b5651d"}` |
+| Tick times (`COMBAT_TICK`, `AUTO_ATTACK_INTERVAL`) | config | `COMBAT_TICK: 3.0` |
+| Feature toggles (`ENEMY_RANGED_ATTACK_ENABLED`) | config | `ENEMY_RANGED: false` |
+
+You can build a tiny loader:
+
+```python
+import yaml, pathlib
+
+def load_config(path: pathlib.Path = pathlib.Path("config.yaml")) -> dict:
+    defaults = {
+        "PLAYER_MV_EXPLORATION": 99,
+        "COMBAT_TICK": 3.0,
+        # …
+    }
+    if path.is_file():
+        with path.open() as f:
+            overrides = yaml.safe_load(f)
+        defaults.update(overrides)
+    return defaults
+```
+
+Then expose the result as a module‑level singleton:
+
+```python
+# core/config.py
+from .loader import load_config
+settings = load_config()
+```
+
+All modules can import `from core.config import settings` and reference `settings["COMBAT_TICK"]`. This eliminates magic numbers scattered throughout the codebase.
+
+---
+
+### 2.3 Type Hinting & Data Validation
+
+Modern Python projects benefit from:
+
+- **`mypy` static checking** (catch mismatched signatures early).  
+- **`pydantic` (or `attrs`) data models** for incoming API payloads and internal actor state.  
+
+Example:
+
+```python
+from pydantic import BaseModel, Field
+
+class MovePathRequest(BaseModel):
+    player_id: str = Field(..., regex=r"^[a-f0-9]{32}$")
+    path: List[Tuple[int, int]]  # list of axial (q, r)
+```
+
+The server can deserialize directly:
+
+```python
+@app.post("/api/move_path")
+def move_path(req: MovePathRequest):
+    # req is already validated, safe to use
+    …
+```
+
+Adding this layer raises confidence that **malformed JSON** won’t crash the server.
+
+---
+
+### 2.4 Testing & CI  
+
+A small test suite pays dividends quickly:
+
+| Test Type | Target |
+|-----------|--------|
+| **Unit** | `hex.utils.distance`, `hex.grid.neighbours`, `pathfinding.a_star` (including blocked cells). |
+| **Integration** | `combat.scheduler` – simulate a few ticks, verify HP changes, turn order. |
+| **Network** | Mock the Flask server (`requests-mock`) and ensure fallback behavior works when the server returns 5xx or times‑out. |
+| **End‑to‑End (optional)** | Use `pygame`’s headless mode (`SDL_VIDEODRIVER=dummy`) to spin up a full client for a few frames and assert no unhandled exceptions. |
+
+Hook the test run into **GitHub Actions** (or your preferred CI) so every push validates:
+
+```yaml
+name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt -r dev-requirements.txt
+      - run: pytest -q
+```
+
+---
+
+### 2.5 Performance “gotchas”
+
+| Area | Risk | Mitigation |
+|------|------|------------|
+| **Pathfinding on many enemies** | A* in each tick could become O(N · M · log M). | Cache paths for the same start/goal pair across ticks; only recompute when the map or AI state changes. |
+| **Pygame draw calls** | Redrawing the entire grid each frame is cheap for 10×10, but scaling up to 50×50 will hit CPU/GPU. | Use a **dirty‑rect** system: only blit hexes that changed (e.g., those under moving actors). |
+| **Network latency** | Validation round‑trip might add >200 ms lag → player feels “stuttered”. | Keep a *client‑side speculative move* that animates instantly, then reconcile with server approval (rollback if rejected). |
+| **Timer drift** | Using `pygame.time.get_ticks()` for several independent timers can drift if frame rate drops. | Centralize timing via a `Clock` that gives a `delta_seconds` value each loop, and update all timers based on that delta. |
+
+---
+
+## 3. Actionable Refactor Roadmap (≈ 2‑Week Sprint)
+
+| Day | Goal |
+|-----|------|
+| **Day 1** | Scaffold the new package layout (folders above). Move `core` files unchanged; create empty stubs for `client/engine.py`, `client/input/handler.py`, etc. |
+| **Day 2‑3** | Extract **hex grid** logic into `core/hex/grid.py` + `core/hex/utils.py`. Add unit tests for distance, neighbours, and map generation validation. |
+| **Day 4** | Port A* to `core/pathfinding/a_star.py`. Write tests covering clear path, blocked path, and movement‑limit enforcement. |
+| **Day 5‑6** | Build **Actor** dataclasses and **AI** state machine (`client/actors/ai.py`). Add simple unit tests for each AI decision (chase vs. patrol). |
+| **Day 7** | Implement a **Scheduler** (`client/combat/scheduler.py`) that handles combat tick, auto‑attack timer, and queued player moves. Verify with a headless integration test. |
+| **Day 8** | Refactor the existing `client/game.py` into a thin entry point that creates `Engine` and runs `engine.run()`. Move rendering into `client/rendering/core.py`. |
+| **Day 9** | Wrap network calls (`client/network/client.py`) with retry/back‑off and a pure‑Python validator fallback. Add integration test with a mocked Flask endpoint. |
+| **Day 10** | Centralize **config** (`core/config.py`) and add a minimal `config.yaml`. Replace all magic numbers across the codebase with `settings[...]`. |
+| **Day 11** | Add **UIManager** for messages, health bars, and sand‑clock. Create a small demo script that shows the UI in isolation. |
+| **Day 12** | Run the full game manually, verify that mode switches, combat rounds, and server validation work end‑to‑end. Fix any regressions. |
+| **Day 13** | Write **CI workflow**, include `pytest` + coverage. Add `flake8`/`ruff` linting. |
+| **Day 14** | Polish README: add a quick start guide, architecture diagram, and contribution guidelines. |
+
+*Optional (post‑sprint)*: Add a **spell/ability system**, introduce **terrain movement modifiers**, and implement **procedural map generation** with guaranteed connectivity.
+
+---
+
+## 4. Final Thoughts  
+
+Your concept is already well‑thought‑out and the README conveys a solid vision. By **splitting the monolith**, **centralizing configuration**, and **adding a lightweight validation layer shared by client and server**, you’ll gain:
+
+- Easier collaboration (new devs can own a sub‑module).  
+- Faster iteration (change a config value, reload, no code changes).  
+- Higher confidence that the client and server stay in sync (shared path‑finding + validator).  
+
+If you follow the refactor roadmap, you’ll also be set up for **automated testing** and **continuous integration**, which are priceless once the project grows beyond the prototype stage.
+
+Good luck, and happy hex‑hacking! 🎮🚀

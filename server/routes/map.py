@@ -6,7 +6,7 @@ Ext Hooks: Add stat checks (e.g., Ref for rough terrain).
 Server Only: Rules enforcement.
 """
 from flask import Blueprint, request, jsonify
-from utils.pathfinding import a_star
+from core.pathfinding.a_star import a_star
 from client.map.tile import Tile
 
 bp = Blueprint('map', __name__)

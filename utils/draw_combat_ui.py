@@ -8,7 +8,7 @@ Grand Scheme: Granular utils for combat visuals, keeping game.py lean (import an
 """
 
 import pygame
-from utils.hex_utils import hex_distance
+from core.hex.utils import hex_distance
 
 def is_engaged(player_hex, enemy_hex):
     """

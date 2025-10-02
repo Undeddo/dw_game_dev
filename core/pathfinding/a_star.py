@@ -7,7 +7,7 @@ Client/Server: Shared logic; client for viz, server for validation.
 """
 
 import heapq
-from utils.hex_utils import get_neighbors, hex_distance
+from core.hex.utils import get_neighbors, hex_distance
 
 def a_star(start, goal, grid, max_distance=6):
     """A* pathfinding with cost and obstacle support."""

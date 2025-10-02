@@ -17,8 +17,8 @@ import math
 import threading
 from client.map.hex_grid import HexGrid
 from core.config import TICK_TIME, SERVER_URL, ENEMY_RANGED_ATTACK_ENABLED
-from utils.pathfinding import a_star
-from utils.hex_utils import hex_distance
+from core.pathfinding.a_star import a_star
+from core.hex.utils import hex_distance
 from utils.draw_utils import draw_sand_clock
 from utils.draw_combat_ui import draw_combat_ui
 from utils.dice import roll_d6

@@ -69,13 +69,45 @@ This project is a 2D hex-based RPG inspired by Dragon Warriors (DW), built with 
 
 ## Technical Architecture
 - **Client**: Pygame for rendering, input, game loop.
-- **Server**: Flask-based (assumed), handles validation.
-- **Files**:
-  - `client/game.py`: Main game loop, modes, drawing.
-  - `client/enemy.py`: Enemy AI, movement, rendering.
-  - `client/map/hex_grid.py`: Grid generation, drawing, path highlights.
-  - `core/config.py`: Constants (TICK_TIME, etc.).
-  - Other utils: Pathfinding, hex utils, rendering, etc.
+- **Server**: Flask-based, handles validation.
+- **Package Layout**:
+  - `client/`: Client-side logic.
+    - `game.py`: Main game loop, modes, drawing.
+    - `enemy.py`: Enemy AI, movement, rendering.
+    - `map/hex_grid.py`: Subclass of core HexGrid with Pygame rendering.
+    - `actors/`: (Stub) Actors like Player/Enemy dataclasses and AI.
+    - `combat/`: (Stub) Combat scheduler and resolver.
+    - `network/`: (Stub) HTTP client for server communication.
+    - `input/`: (Stub) Input handling.
+    - `rendering/`: (Stub) Sprites and additional rendering.
+  - `core/`: Shared logic.
+    - `config.py`: Constants (TICK_TIME, etc.).
+    - `hex/grid.py`: HexGrid core class (logic).
+    - `hex/utils.py`: Hex utilities (distance, neighbors).
+    - `pathfinding/a_star.py`: A* pathfinding algorithm.
+  - `server/`: Server-side validation.
+    - `app.py`: Flask server.
+    - `routes/map.py`: Move path validation route.
+    - `validation.py`, `models.py`: (Stub) Additional validation and Pydantic models.
+  - `tests/`: Unit tests.
+    - `test_hex.py`: Tests for hex utilities.
+    - `test_pathfinding.py`: Tests for A* algorithm.
+    - `test_combat.py`, `test_network.py`: (Stub).
+  - `utils/`: Remaining utilities (dice, draw helpers).
+## Developer Rules
+Granulate the game mechanics into multiple files, so that each is not very big (max in the range of 500-1000 lines of code, this limit can in rare occasions be extended).
+
+Make most features and perks configurable, preferably through config files or easily editable parameters, to allow customization without code modifications.
+
+Include complete comments at the beginning of each file, and also inside the functions, classes, or other game mechanics and calculations.
+
+This ensures maintainability, modularity, and easier collaboration. Large files like the current `client/game.py` (over 600 lines) should be split into smaller modules (e.g., separate combat logic, rendering, input handling).
+
+## Testing
+Unit tests are added for core functions:
+- `tests/test_hex.py`: Hex distance, neighbors, map validation.
+- `tests/test_pathfinding.py`: A* pathfinding, blocked cells, movement limits.
+Run with `python -m pytest tests/`.
 
 ## Developer Rules
 Granulate the game mechanics into multiple files, so that each is not very big (max in the range of 500-1000 lines of code, this limit can in rare occasions be extended).
@@ -83,3 +115,5 @@ Granulate the game mechanics into multiple files, so that each is not very big (
 Make most features and perks configurable, preferably through config files or easily editable parameters, to allow customization without code modifications.
 
 This ensures maintainability, modularity, and easier collaboration. Large files like the current `client/game.py` (over 600 lines) should be split into smaller modules (e.g., separate combat logic, rendering, input handling).
+
+Include complete comments at the beginning of each file, and also inside the functions, classes, or other game mechanics and calculations.

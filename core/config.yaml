@@ -1,0 +1,19 @@
+game:
+  tick_time: 3.0
+  server_url: "http://localhost:5000"
+  enemy_ranged_attack_enabled: false
+  win_duration: 10.0
+  message_duration: 3.0
+  flash_duration: 1.0
+  move_speed: 100.0
+  mv_limit: 6
+
+paths:
+  player_sprite: "client/sprites/character.png"
+  enemy_sprite: "client/sprites/enemy.png"
+
+combat:
+  auto_attack_interval: 2.0
+  dice_sides: 6
+
+# Additional configs can be added as needed for customization.
