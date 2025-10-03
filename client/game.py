@@ -417,7 +417,7 @@ while running:
         # CR advances even if no planned movement (no action)
 
         # Auto attack for player in combat if adjacent to enemy and not moving (melee only)
-        if not is_moving and current_time - last_auto_attack > 2.0:
+        if player_hp > 0 and not is_moving and current_time - last_auto_attack > 2.0:
             closest = get_closest_enemy(char_pos, enemies)
             if closest:
                 dist = hex_distance(char_pos[0], char_pos[1], closest.pos[0], closest.pos[1])
