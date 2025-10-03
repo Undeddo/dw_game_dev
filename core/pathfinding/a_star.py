@@ -27,20 +27,19 @@ def a_star(start, goal, grid, max_distance=6):
     while open_set:
         current = heapq.heappop(open_set)[1]
         open_set_hash.remove(current)
-        
+
         if current == goal:
             # Reconstruct path
             path = reconstruct_path(came_from, current, start)
             if max_distance is not None and isinstance(max_distance, int) and len(path) > max_distance + 1:
                 path = path[:max_distance + 1]
-            print(f"A* found path: {path}")  # Debug: Show the computed path
             return path
-        
+
         for neighbor in get_neighbors(current[0], current[1]):
             if neighbor not in grid or grid[neighbor].blocked:
                 continue
             tentative_g_score = g_score[current] + grid[neighbor].cost
-            
+
             if tentative_g_score < g_score.get(neighbor, INF):
                 from_pos = current
                 g_score[neighbor] = tentative_g_score
@@ -49,7 +48,7 @@ def a_star(start, goal, grid, max_distance=6):
                 if neighbor not in open_set_hash:
                     heapq.heappush(open_set, (f_score[neighbor], neighbor))
                     open_set_hash.add(neighbor)
-    
+
     return []  # No path found
 
 def reconstruct_path(came_from, current, start):

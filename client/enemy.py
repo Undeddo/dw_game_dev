@@ -9,6 +9,7 @@ Grand Scheme: Granular enemy logic class, keeping game.py lean. Manages path cal
 
 import math
 from client.render.enemy_renderer import EnemyRenderer
+from client.map.tile import Tile
 from core.pathfinding.a_star import a_star
 from core.hex.utils import hex_distance
 
@@ -46,30 +47,66 @@ class Enemy:
         """
         self.screen_pos = list(screen_pos)
 
-    def calculate_ai_path(self, player_pos, grid_tiles, behavior='chase'):
+    def find_free_hex_adjacent_to_target(self, target_pos, grid_tiles, occupied=None):
+        """Find closest free hex within mv_limit range from target, closest to self."""
+        if occupied is None: occupied = set()
+        closest = None
+        min_dist = float('inf')
+        mv_limit = self.mv_limit  # to reach within that
+        for q in range(-mv_limit, mv_limit + 1):
+            for r in range(-mv_limit, mv_limit + 1):
+                if abs(q + r) > mv_limit: continue
+                hx = target_pos[0] + q
+                hy = target_pos[1] + r
+                # limit to reasonable grid size
+                if abs(hx) > 50 or abs(hy) > 50: continue
+                if (hx,hy) in grid_tiles and not grid_tiles[(hx,hy)].blocked and (hx,hy) not in occupied:
+                    dist = hex_distance(hx, hy, target_pos[0], target_pos[1])
+                    if dist < min_dist:
+                        min_dist = dist
+                        closest = (hx, hy)
+        return closest
+
+    def calculate_ai_path(self, player_pos, grid_tiles, enemies, behavior='chase', occupied=None):
         """
         Enhanced AI: Plan path based on behavior ('chase', 'patrol', 'retreat').
-        - Chase: Towards player.
-        - Patrol: Random nearby hex.
-        - Retreat: Away from player.
+        - Chase: Towards closest free hex adjacent to player.
+        - Patrol: Random nearby free hex.
+        - Retreat: Free hex furthest from player.
         - References: a_star from utils/pathfinding.py.
         - Returns: Planned path or [] if none.
+        - Blocked: Hexes occupied by entities are unpassable except start.
         """
         start_hex = tuple(self.pos)
+        # Calculate occupied positions first
+        if occupied is None:
+            occupied = {tuple(enem.pos) for enem in enemies if enem.hp > 0}
+            occupied.add(tuple(player_pos))
         if behavior == 'retreat':
-            # Find hex furthest from player within MV
-            goal_hex = self.find_retreat_position(player_pos, grid_tiles)
+            goal_hex = self.find_retreat_position(player_pos, grid_tiles, occupied)
         elif behavior == 'patrol':
-            goal_hex = self.find_patrol_position(grid_tiles)
+            goal_hex = self.find_patrol_position(grid_tiles, occupied)
         else:  # chase
-            goal_hex = tuple(player_pos)
+                # Find free hex adjacent to player
+                goal_hex = self.find_free_hex_adjacent_to_target(player_pos, grid_tiles, occupied)
+
         if goal_hex and goal_hex != start_hex:
-            path = a_star(start_hex, goal_hex, grid_tiles, self.mv_limit)
+            # Modify grid to block occupied hexes except start
+            modified_tiles = {}
+            for k, v in grid_tiles.items():
+                blocked = v.blocked or ((k != start_hex) and (k == tuple(player_pos)))
+                new_tile = Tile(v.type)
+                new_tile.cost = v.cost
+                new_tile.blocked = blocked
+                new_tile.color = v.color
+                modified_tiles[k] = new_tile
+            path = a_star(start_hex, goal_hex, modified_tiles, self.mv_limit)
             return path or []
         return []
 
-    def find_retreat_position(self, player_pos, grid_tiles):
+    def find_retreat_position(self, player_pos, grid_tiles, occupied=None):
         """Find a hex away from player."""
+        if occupied is None: occupied = set()
         px, py = player_pos
         max_dist = 0
         best_hex = None
@@ -78,15 +115,16 @@ class Enemy:
                 if abs(q + r) > self.mv_limit:
                     continue
                 hx, hy = self.pos[0] + q, self.pos[1] + r
-                if (hx, hy) in grid_tiles and not grid_tiles[(hx, hy)].blocked:
+                if (hx, hy) in grid_tiles and not grid_tiles[(hx, hy)].blocked and abs(hx) <= 10 and abs(hy) <= 10 and (hx, hy) not in occupied:
                     dist = hex_distance(hx, hy, px, py)
                     if dist > max_dist:
                         max_dist = dist
                         best_hex = (hx, hy)
         return best_hex
 
-    def find_patrol_position(self, grid_tiles):
+    def find_patrol_position(self, grid_tiles, occupied=None):
         """Find a random nearby unblocked hex."""
+        if occupied is None: occupied = set()
         from random import choice
         candidates = []
         for q in range(-self.mv_limit, self.mv_limit + 1):
@@ -94,7 +132,7 @@ class Enemy:
                 if abs(q + r) > self.mv_limit:
                     continue
                 hx, hy = self.pos[0] + q, self.pos[1] + r
-                if (hx, hy) in grid_tiles and not grid_tiles[(hx, hy)].blocked and (hx, hy) != tuple(self.pos):
+                if (hx, hy) in grid_tiles and not grid_tiles[(hx, hy)].blocked and abs(hx) <= 10 and abs(hy) <= 10 and (hx, hy) not in occupied:
                     candidates.append((hx, hy))
         if candidates:
             return choice(candidates)
@@ -114,44 +152,31 @@ class Enemy:
 
     def update_movement(self, grid_hex_size, screen, move_speed, dt):
         """
-        Updates enemy position during movement (LERP towards next hex, mirrors game.py player movement).
-        - References: game.py movement loop (LERP), MOVE_SPEED.
-        - Purpose: Smooth animation towards target hex, then advance path.
+        Updates enemy position during movement, mirroring the player's path-following logic exactly.
         """
-        if not self.is_moving or not self.queued_path or self.current_path_index >= len(self.queued_path):
-            return False  # Completed
-
-        target_hex = self.queued_path[self.current_path_index]
-        target_screen = self.hex_to_screen(target_hex[0], target_hex[1], grid_hex_size, screen)
-
-        # Calculate distance to target
-        dx = target_screen[0] - self.screen_pos[0]
-        dy = target_screen[1] - self.screen_pos[1]
-        dist = math.hypot(dx, dy)
-
-        if dist < 5:  # Reached target hex
-            # Update both screen and hex positions
-            self.screen_pos = list(target_screen)
-            self.pos = list(target_hex)
-            self.current_path_index += 1
-
-            # Check if path is complete
-            if self.current_path_index >= len(self.queued_path):
-                self.is_moving = False
-                self.queued_path = []
-                self.current_path_index = 0
-                print(f"Enemy completed path, now at hex {self.pos}")
-                return True  # Path complete
-            return False  # Continue to next hex in path
-        else:
-            # LERP towards target (smooth movement)
-            # Normalize the movement speed by distance to ensure consistent speed
-            if dist > 0:
-                move_factor = (move_speed * dt) / dist
-                t = min(1.0, move_factor)
+        if self.is_moving and self.queued_path and self.current_path_index < len(self.queued_path):
+            target_hex = self.queued_path[self.current_path_index]
+            target_screen = self.hex_to_screen(target_hex[0], target_hex[1], grid_hex_size, screen)
+            dx = target_screen[0] - self.screen_pos[0]
+            dy = target_screen[1] - self.screen_pos[1]
+            dist = math.hypot(dx, dy)
+            if dist < 10:
+                self.screen_pos = list(target_screen)
+                self.pos = list(target_hex)
+                self.current_path_index += 1
+                print(f"Enemy reached hex: {target_hex}")
+            else:
+                t = min(1.0, (move_speed * dt) / dist)
                 self.screen_pos[0] += dx * t
                 self.screen_pos[1] += dy * t
-            return False  # Still moving
+
+        if self.queued_path and self.current_path_index >= len(self.queued_path):
+            self.queued_path = []
+            self.current_path_index = 0
+            self.is_moving = False
+            print(f"Enemy completed path, now at hex {self.pos}")
+            return True  # Path complete
+        return False  # Still moving or completed
 
     def hex_to_screen(self, q, r, size, screen):
         """Convert hex coordinates to screen coordinates."""
@@ -159,7 +184,7 @@ class Enemy:
         y = size * math.sqrt(3) * (r + q/2)
         return (int(x + screen.get_width() // 2), int(y + screen.get_height() // 2))
 
-    def take_turn(self, player_pos, grid_tiles, attack_enabled=False):
+    def take_turn(self, enemies, player_pos, grid_tiles, attack_enabled=False):
         """
         Enemy turn: Decide behavior and calculate AI path (references game.py combat tick).
         - Behavior logic: Retreat if low HP, chase if close, patrol if far.
@@ -186,37 +211,17 @@ class Enemy:
         if attack_enabled and dist <= 3:
             self.attack_this_turn = True
 
-        if behavior == 'chase':
-            # Simple direct movement towards player for testing
-            print(f"Enemy attempting to move towards player at {player_pos}")
-            # Try to find a simple path to an adjacent hex closer to player
-            best_hex = None
-            best_dist = dist
-
-            # Check all 6 adjacent hexes
-            for dq in [-1, 0, 1]:
-                for dr in [-1, 0, 1]:
-                    if dq == 0 and dr == 0:
-                        continue
-                    if abs(dq + dr) > 1:  # Skip diagonal moves for hex grid
-                        continue
-
-                    new_q = self.pos[0] + dq
-                    new_r = self.pos[1] + dr
-                    new_hex = (new_q, new_r)
-
-                    if new_hex in grid_tiles and not grid_tiles[new_hex].blocked:
-                        new_dist = hex_distance(new_q, new_r, player_pos[0], player_pos[1])
-                        if new_dist < best_dist:
-                            best_dist = new_dist
-                            best_hex = new_hex
-
-            if best_hex:
-                simple_path = [tuple(self.pos), best_hex]
-                print(f"Enemy found simple path: {simple_path}")
-                self.start_movement(simple_path)
-            else:
-                print(f"Enemy found no adjacent hexes to move to")
+        if self.attack_this_turn:
+            path = []
+        else:
+            path = self.calculate_ai_path(player_pos, grid_tiles, enemies, behavior)
+        if path and not self.is_moving:
+            self.start_movement(path)
+            print(f"Enemy {behavior}ing with path length: {len(path)}")
+        elif path:
+            print(f"Enemy wants to {behavior} but already moving")
+        else:
+            print(f"Enemy failed to find path for {behavior}")
 
         # Return next active state if needed
 

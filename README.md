@@ -75,11 +75,12 @@ This project is a 2D hex-based RPG inspired by Dragon Warriors (DW), built with 
     - `game.py`: Main game loop, modes, drawing.
     - `enemy.py`: Enemy AI, movement, rendering.
     - `map/hex_grid.py`: Subclass of core HexGrid with Pygame rendering.
-    - `actors/`: (Stub) Actors like Player/Enemy dataclasses and AI.
-    - `combat/`: (Stub) Combat scheduler and resolver.
-    - `network/`: (Stub) HTTP client for server communication.
-    - `input/`: (Stub) Input handling.
-    - `rendering/`: (Stub) Sprites and additional rendering.
+    - `actors/base.py`: Actor dataclasses (Player, Enemy).
+    - `actors/ai.py`: Enemy AI state machine (chase, patrol, retreat).
+    - `combat/scheduler.py`: Event scheduler for timed actions.
+    - `network/client.py`: HTTP client with retry/backoff.
+    - `ui/manager.py`: UI manager for messages, health bars, sand-clock.
+    - `input/`, `rendering/`: (Stub) Input handling, additional rendering.
   - `core/`: Shared logic.
     - `config.py`: Constants (TICK_TIME, etc.).
     - `hex/grid.py`: HexGrid core class (logic).
@@ -100,6 +101,12 @@ Granulate the game mechanics into multiple files, so that each is not very big (
 Make most features and perks configurable, preferably through config files or easily editable parameters, to allow customization without code modifications.
 
 Include complete comments at the beginning of each file, and also inside the functions, classes, or other game mechanics and calculations.
+
+## Recent Changes
+- **Package Layout Refactor**: Introduced modular structure with `client/`, `core/`, `server/`, `tests/`, `utils/`. Moved utilities to `core/`, extracted hex grid logic to `core/hex/grid.py`, inherited by `client/map/hex_grid.py` for rendering.
+- **New Modules**: Added `client/actors/base.py` (Actor dataclasses), `client/actors/ai.py` (Enemy AI state machine), `client/combat/scheduler.py` (Event queue), `client/network/client.py` (Network client with retry), `client/ui/manager.py` (UI elements).
+- **Configuration**: Centralized settings to `core/config.yaml`, loaded in `core/config.py`.
+- **Unit Tests**: Added `tests/test_hex.py` and `tests/test_pathfinding.py` for core functions.
 
 This ensures maintainability, modularity, and easier collaboration. Large files like the current `client/game.py` (over 600 lines) should be split into smaller modules (e.g., separate combat logic, rendering, input handling).
 

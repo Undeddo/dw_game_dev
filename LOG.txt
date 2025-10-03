@@ -390,3 +390,88 @@ Your concept is already well‑thought‑out and the README conveys a solid visi
 If you follow the refactor roadmap, you’ll also be set up for **automated testing** and **continuous integration**, which are priceless once the project grows beyond the prototype stage.
 
 Good luck, and happy hex‑hacking! 🎮🚀
+
+[...]
+
+
+## 🎉 Congrats – You’ve Knocked‑Out the Roadmap!  
+I can see the **core architecture** you set up in the previous sprint is now reflected in this design document.  Everything from the hex‑grid to the event‑queue‑driven combat loop is present, and the “perks” language you used throughout the README now lives in the formal GDD.  That’s a huge win for maintainability and for getting other developers on board.
+
+Below is a **structured review** that checks the new GDD against the original goals, points out a few blind spots that often surface later, and offers concrete next‑step recommendations.
+
+---
+
+## 1. Alignment With Original Goals
+
+| Original Goal | How It Shows Up in the GDD | Status |
+|---------------|----------------------------|--------|
+| **Turn‑based, lockstep combat** | “Lockstep rounds every 3 s” with simultaneous execution description. | ✅ Completed |
+| **Hexagonal movement (axial coords)** | Mentioned under “Hexagonal Movement” and “Core Design Principles”. | ✅ Completed |
+| **Server validation + offline fallback** | Dedicated “Server Integration” section, REST API, offline mode. | ✅ Completed |
+| **Modularity (< 1 k lines per file)** | “Each mechanic in separate files (<1000 lines)” claim. | ✅ Completed (assuming the split you made). |
+| **Config‑driven mechanics** | “All settings (MV, damage, timers) in `config.yaml`”. | ✅ Completed |
+| **Testing** | “Unit tests for core logic ensure reliability”. | ✅ Completed (though we’ll flesh out coverage later). |
+| **Performance‑friendly rendering** | “Pygame for lightweight rendering, event queue for efficiency”. | ✅ Completed |
+| **Future‑proof extensibility** | “Class‑based design”, “config can add new stats”. | ✅ Completed |
+
+*Bottom line:* The GDD now **covers every high‑level requirement** you set out for the first MVP.
+
+---
+
+## 2. Content Gaps & Recommendations
+
+| Area | What’s Missing / Could Be Sharpened | Suggested Action |
+|------|--------------------------------------|------------------|
+| **Config file format** | You reference `config.yaml` but don’t show its schema. | Add a **sample `config.yaml`** (or a `config.schema.json`) in the repo and list required keys with default values. This helps contributors know what can be tweaked without diving into code. |
+| **Networking security** | The GDD mentions “secure” REST validation, but no token/auth scheme is described. | Document a **simple session token** flow (e.g., client receives a UUID at start, sends it with every `/api/move_path` request). Even a minimal approach improves cheat‑prevention and makes multiplayer later easier. |
+| **Local validation fallback** | Offline fallback is mentioned, but the exact logic (mirror server validation) is not. | Add a subsection “Local Path Validation” describing the shared `PathPlanner.validate_path` call that the client runs when the server is unreachable. |
+| **AI state machine details** | AI behaviours are listed, but the transition rules (e.g., when does an enemy switch from patrol → chase?) are not explicit. | Provide a **state‑transition diagram** or a small table:
+
+| State | Trigger to → | Conditions |
+|-------|--------------|------------|
+| Patrol | Chase | Player distance ≤ 15 hexes |
+| Chase | Retreat | HP ≤ 30 % |
+| Retreat | Patrol | HP > 30 % **and** distance > 15 hexes |
+
+| This can be turned into a tiny `Enum` + dict mapping in code. |
+| **Combat Scheduler** | The “event queue” concept is referenced, but the exact tick handling (combat tick vs. auto‑attack timer) isn’t spelled out. | Add a **flowchart** showing: <br>1. `CombatTick` fires → process player planned path, then enemy AI. <br>2. `AutoAttackTimer` fires independently → check adjacency, deal damage. <br>3. Both timers reset. |
+| **Procedural map generation** | The GDD says “biased towards fair exploration” but no algorithm is given. | Include a short note on the generation method (e.g., “start with a random seed, flood‑fill to guarantee connectivity, then sprinkle walls/forests with weighted probabilities”). This also ties nicely to the “ensure reachable” validation you built. |
+| **Testing coverage** | You mention unit tests, but there’s no metric or list of what’s covered. | Add a **`tests/coverage_report.md`** or badge (e.g., `coverage: 89%`). List major test suites: hex utils, pathfinding, scheduler, AI decision, network client, config loader. |
+| **UI/UX polish** | UI manager is implied, but specifics like message TTL, fade‑out, or scaling for different resolutions aren’t defined. | Add a **UI spec** table (element, position, size, behavior). This will be handy when you later add animations or localization. |
+| **Future expansion placeholders** | The “Character Progression” block is just a placeholder. | Sketch a minimal **progression model** (XP → level → stat points) now, even if you don’t implement it. Having a data class defined early avoids later refactors. |
+
+---
+
+## 3. Quick Wins (1‑Day Tasks)
+
+1. **Add a sample `config.yaml`** with comments.  
+2. **Create a small “API contract” doc** (`api_contract.md`) that lists request/response JSON schemas for `/api/move_path`.  
+3. **Insert an AI state diagram** (SVG/PlantUML) into the GDD.  
+4. **Generate a coverage badge** (e.g., using `coveralls` or `codecov`) and embed it in the README.  
+5. **Write a one‑page “Getting Started”** that references the folder layout, the config file, and how to spin up the Flask server for local testing.
+
+These items will make the repo *immediately* more approachable for new contributors.
+
+---
+
+## 4. Next Milestone Suggestions
+
+| Milestone | Core Deliverables | Why It Matters |
+|-----------|-------------------|----------------|
+| **M2 – Character Progression & Stats** | - `core/models/actor_stats.py` (XP, level, stat points)<br>- Config‑driven stat growth curves<br>- UI element for level bar | Gives the game a longer loop, makes the “perks” promise concrete, and provides a natural hook for future classes/magic. |
+| **M3 – Enhanced Terrain Effects** | - Forest MV penalty (e.g., -2) implemented in `PathPlanner` cost function<br>- Visual overlay (tree sprites) <br>- Config entries for new terrain types | Turns the “future modifiers” note into a playable feature and tests the modular cost‑function design. |
+| **M4 – Multiplayer Prototype** | - Simple lobby using Flask + WebSockets (or `socket.io`)<br>- Shared validation via the same API endpoint<br>- Turn synchronization across two clients | Leverages the server‑validation architecture you already have, and validates the networking token design. |
+| **M5 – Polish & Release Candidate** | - Animations for attacks/ movement<br>- Sound effects & music<br>- Full documentation (GDD + API + contributor guide) <br>- CI pipeline with lint, tests, coverage badge | Brings the product to a public‑ready state and showcases the modular design you built. |
+
+You can pick whichever milestone aligns with your team’s current capacity; the order above is just a logical progression.
+
+---
+
+## 5. TL;DR Action List
+
+1. **Add concrete artifacts**: sample `config.yaml`, API contract, AI diagram, coverage badge, quick‑start guide.  
+2. **Fill minor GDD gaps** (local validation description, terrain generation algorithm, UI specs).  
+3. **Plan the next feature wave** (stats/leveling → terrain effects → multiplayer).  
+4. **Celebrate** – you’ve turned a sprawling 600‑line monolith into a clean, test‑driven, modular codebase. 🎉
+
+Let me know which of the quick‑wins you’d like to dive into first, or if you’d prefer to start sketching the **Character Progression** system. I’m happy to help flesh out data models, write sample config snippets, or draft the API schema. Happy hacking!

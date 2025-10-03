@@ -23,7 +23,7 @@ class HexGrid:
         # Generate 10x10 axial grid (q from -5 to 4, r from -5 to 4, adjust for offset)
         for q in range(-self.size // 2, self.size // 2 + 1):
             for r in range(-self.size // 2, self.size // 2 + 1):
-                self.tiles[(q, r)] = Tile(random.choice(['plain'] * 8 + ['forest'] * 1 + ['wall'] * 1))  # ~10% walls, 10% forest
+                self.tiles[(q, r)] = Tile(random.choice(['plain'] * 9 + ['forest'] * 1))  # ~10% forest, no walls for testing
 
     def hex_to_pixel(self, q, r):
         """Convert axial coordinates to pixel position."""

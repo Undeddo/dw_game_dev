@@ -266,7 +266,7 @@ while running:
                         # Have enemies start their turn simultaneously in combat
                         for enem in enemies:
                             if enem.hp > 0:
-                                enem.take_turn(char_pos, grid.tiles)
+                                enem.take_turn(list(enemies), char_pos, grid.tiles)
                         data = {"action": "move_path", "start": start_hex, "goal": tuple(goal), "grid": grid.get_grid_state(), "game_mode": game_mode}
                         validation_thread = threading.Thread(target=validate_combat_path_async, args=(path, data))
                         validation_thread.daemon = True
@@ -357,11 +357,6 @@ while running:
                 print(f"Enemy {enem.pos} moving: path={enem.queued_path}, index={enem.current_path_index}")
                 enemy_path_complete = enem.update_movement(grid.hex_size, screen, MOVE_SPEED, dt)
 
-                # Update enemy screen position after movement
-                if enem.current_path_index < len(enem.queued_path):
-                    enemy_screen_pos = hex_to_screen(enem.pos[0], enem.pos[1], grid.hex_size, screen)
-                    enem.set_screen_pos(enemy_screen_pos)
-
                 # Attack if path complete and within range
                 if enemy_path_complete and enem.hp > 0:
                     dist = hex_distance(enem.pos[0], enem.pos[1], char_pos[0], char_pos[1])
@@ -395,8 +390,8 @@ while running:
             print("Combat CR tick: started planned movement")
         # Enemy takes turn after player (references DW turn-based, alternating)
         for enem in enemies:
-            if enem.hp > 0:
-                enem.take_turn(char_pos, grid.tiles, attack_enabled=True)
+            if enem.hp > 0 and not enem.is_moving:
+                enem.take_turn(list(enemies), char_pos, grid.tiles, attack_enabled=False)
 
         # Handle enemy attacks on their turn
         for enem in enemies:
@@ -440,21 +435,20 @@ while running:
     # Enemy AI: Make enemies continuously chase the player
     for enem in enemies:
         if enem.hp > 0:
-            print(f"Enemy {enem.pos}: is_moving={enem.is_moving}, has_path={bool(enem.queued_path)}, path_length={len(enem.queued_path) if enem.queued_path else 0}")
             # Check if enemy should recalculate path (every few seconds or if no path)
             current_time = time.time()
             should_recalculate = (
                 not enem.queued_path or  # No path
-                current_time - getattr(enem, 'last_path_calc', 0) > 2.0 or  # Recalculate every 2 seconds
+                current_time - getattr(enem, 'last_path_calc', 0) > 1.0 or  # Recalculate every 1.0 seconds
                 (enem.is_moving and current_time - getattr(enem, 'last_path_calc', 0) > 1.0)  # More frequent recalculation while moving
             )
 
-            if should_recalculate:
+            if should_recalculate and not enem.is_moving:
+                print(f"Enemy {enem.pos}: is_moving={enem.is_moving}, has_path={bool(enem.queued_path)}, path_length={len(enem.queued_path) if enem.queued_path else 0}")
                 dist_to_player = hex_distance(enem.pos[0], enem.pos[1], char_pos[0], char_pos[1])
                 print(f"Enemy {enem.pos} recalculating path - dist to player: {dist_to_player}")
-                if dist_to_player <= 15:  # Within reasonable chase distance
-                    enem.last_path_calc = current_time
-                    enem.take_turn(char_pos, grid.tiles)
+                enem.last_path_calc = current_time
+                enem.take_turn(list(enemies), char_pos, grid.tiles, attack_enabled=True)
     # Draw
     screen.fill((0, 0, 0))
     grid.draw(screen)
