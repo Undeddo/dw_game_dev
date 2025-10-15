@@ -17,6 +17,7 @@ import math
 import threading
 from client.map.hex_grid import HexGrid
 from core.config import TICK_TIME, SERVER_URL, ENEMY_RANGED_ATTACK_ENABLED
+# TICK_TIME = 1.0  # Commented out; using config for production
 from core.pathfinding.a_star import a_star
 from core.hex.utils import hex_distance
 from utils.draw_utils import draw_sand_clock
@@ -24,6 +25,7 @@ from utils.draw_combat_ui import draw_combat_ui
 from utils.dice import roll_d6
 from client.render.character_renderer import CharacterRenderer
 from client.enemy import Enemy
+from client.game_state import GameState
 
 pygame.font.init()
 font = pygame.font.SysFont('Arial', 24)
@@ -46,31 +48,38 @@ enemies = [
     Enemy(start_pos=(0, 1), mv_limit=6),
     Enemy(start_pos=(1, 3), mv_limit=6),
 ]  # Multiple enemies for more challenge
-char_pos = [0, 0]  # Current (q, r) as int list
 
-# Debug: Check grid state
+# Centralize state in GameState (reduces globals; see client/game_state.py)
+state = GameState(
+    enemies=enemies,  # List of Enemy instances; updates via state.enemies
+    goal_pos=(9, 9),  # Quest goal hex (refs hex_grid size; per GD win condition)
+    player_hp=10,  # Overrides default for battle-ready
+    char_screen_pos=[screen.get_width() // 2, screen.get_height() // 2],  # Screen pos
+    mv_limit=6  # Default MV; exploration mode overrides to 99 per GD method
+)
+combat_system = None  # Placeholder; will initialize if Step 2 is completed
+char_pos = state.player_pos  # Alias for legacy refs; will remove in Step 2
+game_mode = state.game_mode  # Alias; will remove
+player_hp = state.player_hp  # Alias; will remove
+goal_pos = state.goal_pos  # Alias; will remove
+char_screen_pos = state.char_screen_pos  # Alias; will remove
+queued_path = state.queued_path  # Alias; will remove
+is_moving = state.is_moving  # Alias; will remove
+path_validated = state.path_validated  # Alias; will remove
+server_offline = state.server_offline  # Alias; will remove
+combat_round = state.combat_round  # Alias; will remove
+win_message = state.win_message  # Alias; will remove
+win_message_time = state.win_message_time  # Alias; will remove
+last_auto_attack = state.last_auto_attack  # Alias; will remove
+
+
+# Debug: Check grid state (now logs use state fields)
 print(f"Grid size: {grid.size}, hex_size: {grid.hex_size}")
 print(f"Total tiles: {len(grid.tiles)}")
 blocked_count = sum(1 for tile in grid.tiles.values() if tile.blocked)
 print(f"Blocked tiles: {blocked_count}")
-print(f"Player start position: {char_pos}")
-print(f"Enemy start positions: {[enem.pos for enem in enemies]}")
-player_hp = 10  # Basic player HP (adjust mechanics later)
-enemy_max_hp = 10
-goal_pos = (9, 9)  # Quest goal hex (references hex_grid size; player wins by reaching)
-win_message = ""  # Win message to display
-win_message_time = 0.0
-WIN_DURATION = 10.0  # Display win longer
-char_screen_pos = [screen.get_width() // 2, screen.get_height() // 2]  # Screen position
-queued_path = []  # List of (q,r)
-current_path_index = 0
-mv_limit = 6  # Default Mv/5ft per hex
-game_mode = 'exploration'  # 'exploration' or 'combat'
-path_validated = False  # True if server has approved the current path
-initial_char_pos = None  # Initial char_pos for server validation to avoid interruptions
-is_moving = False  # True if character is currently moving
-goal_target = None  # Target goal for path validation
-server_offline = False  # Flag to suppress repeated connection errors
+print(f"Player start position: {state.player_pos}")
+print(f"Enemy start positions: {[enem.pos for enem in state.enemies]}")
 
 # Error feedback state
 rejected_path = []  # Hexes to flash red for rejection feedback
@@ -244,12 +253,12 @@ while running:
                         print(f"Exploration: switched to new path from current position")
                     else:
                         print("No path found!")
-                else:  # Combat mode
+                else:  # Combat mode: original behavior for now, until CombatSystem is re-implemented correctly
                     if is_moving:
                         continue  # Can't plan new move during movement
                     # Calculate path from current position
                     start_hex = tuple(char_pos)
-                    local_mv_limit = mv_limit
+                    local_mv_limit = state.get_mv_limit()  # Use state method for mode-aware MV
                     # Block living enemy hexes to prevent occupation (DW: hexes occupied by one entity)
                     for enem in enemies:
                         if enem.hp > 0:
@@ -377,7 +386,7 @@ while running:
                             win_message_time = current_time
                             print("Player dies!")
 
-    # Combat round tick: advance timer and start planned movement if applicable
+    # Combat round tick: Execute planned actions simultaneously (DW lockstep); original behavior restored as CombatSystem was broken
     if game_mode == 'combat' and (current_time - last_cr_start >= TICK_TIME):
         last_cr_start += TICK_TIME  # Lockstep advance CR timer
         combat_round += 1
@@ -403,7 +412,7 @@ while running:
                     msg = f"Enemy melee attack for {damage}!"
                 elif dist <= 3 and ENEMY_RANGED_ATTACK_ENABLED:
                     damage = max(0, roll_d6() - (dist - 1))
-                    msg = f"Enemy ranged attack for {damage} (distance {dist})!"
+                    msg = f"Enemy ranged attack for {damage} at dist {dist}!"
                 else:
                     damage = None
                 if damage:
@@ -431,24 +440,6 @@ while running:
                             closest.pos = [-999, -999]
                             print("Enemy dies!")
                         last_auto_attack = current_time
-
-    # Enemy AI: Make enemies continuously chase the player
-    for enem in enemies:
-        if enem.hp > 0:
-            # Check if enemy should recalculate path (every few seconds or if no path)
-            current_time = time.time()
-            should_recalculate = (
-                not enem.queued_path or  # No path
-                current_time - getattr(enem, 'last_path_calc', 0) > 1.0 or  # Recalculate every 1.0 seconds
-                (enem.is_moving and current_time - getattr(enem, 'last_path_calc', 0) > 1.0)  # More frequent recalculation while moving
-            )
-
-            if should_recalculate and not enem.is_moving:
-                print(f"Enemy {enem.pos}: is_moving={enem.is_moving}, has_path={bool(enem.queued_path)}, path_length={len(enem.queued_path) if enem.queued_path else 0}")
-                dist_to_player = hex_distance(enem.pos[0], enem.pos[1], char_pos[0], char_pos[1])
-                print(f"Enemy {enem.pos} recalculating path - dist to player: {dist_to_player}")
-                enem.last_path_calc = current_time
-                enem.take_turn(list(enemies), char_pos, grid.tiles, attack_enabled=True)
     # Draw
     screen.fill((0, 0, 0))
     grid.draw(screen)
@@ -511,7 +502,7 @@ while running:
         size = 30  # Size of hourglass
         elapsed = min(TICK_TIME, current_time - last_cr_start)
         progress = elapsed / TICK_TIME
-        draw_sand_clock(screen, clock_x, clock_y, size, progress, font, combat_round)
+        draw_sand_clock(screen, clock_x, clock_y, size, progress, font, state.combat_round)
 
         # Draw combat UI (HP bars, engagement highlights; references draw_sand_clock for consistent draw order)
         # Commented out for multiple enemies - need to update the UI to handle list
@@ -524,7 +515,7 @@ while running:
         screen.blit(rejected_text_surface, text_rect)
 
     # Draw win message if active (references rejected_message display)
-    if win_message and (current_time - win_message_time < WIN_DURATION):
+    if win_message and (current_time - win_message_time < state.WIN_DURATION):
         win_text_surface = font.render(win_message, True, (0, 255, 0)) # Green text
         text_rect = win_text_surface.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 150))
         screen.blit(win_text_surface, text_rect)
