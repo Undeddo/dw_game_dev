@@ -39,8 +39,6 @@ class CombatSystem:
         - Computes path with MV limits, blocks occupied hexes for fairness.
         - Returns True if path set; False otherwise (e.g., invalid).
         """
-        if self.state.defeated:
-            return False  # Dead player can't plan actions
         if self.state.is_moving:
             print("Player still moving, can't plan new path")
             return False
@@ -134,8 +132,8 @@ class CombatSystem:
         - Player attacks adjacent enemy; enemies attack player.
         - Use dice rolls; update HP.
         """
-        # Player auto-attack if adjacent to enemy and not moving (and not defeated)
-        if self.state.player_hp > 0 and not self.state.defeated and not self.state.is_moving:
+        # Player auto-attack if adjacent to enemy and not moving
+        if self.state.player_hp > 0 and not self.state.is_moving:
             closest = self.state.get_closest_enemy()
             if closest:
                 dist = hex_distance(self.state.player_pos[0], self.state.player_pos[1], closest.pos[0], closest.pos[1])

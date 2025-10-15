@@ -10,7 +10,6 @@ from dataclasses import dataclass, field
 from typing import List, Tuple
 from core.config import TICK_TIME, ENEMY_RANGED_ATTACK_ENABLED
 from client.enemy import Enemy
-from client.actors.base import ActorStats
 
 @dataclass
 class GameState:
@@ -18,18 +17,17 @@ class GameState:
     Encapsulates player, enemies, and global state per GAMEDESIGN.md.
     - References: Player MV/HP from config for combat; enemy pos for AI dependency.
     - Grand Scheme: Turn game.py into thin manager; all state changes via methods here.
-    - Actor Integration: Player stats via ActorStats (STR/AGI/HP/MR); enemies will migrate to ActorStats in future.
     """
-    defeated: bool = False  # Set to True when HP <= 0; blocks all player actions
     # Required fields (use None and init in __post_init__ for clarity)
     player_pos: List[int] = field(default_factory=lambda: [0, 0])  # (q, r) as list for mutability
     enemies: List[Enemy] = field(default_factory=list)   # List of Enemy instances; depends on client/enemy.py
     goal_pos: Tuple[int, int] = (9, 9)  # Quest target; maps goal check in game.py
     game_mode: str = 'exploration'  # 'exploration' or 'combat'; references mode switches in GD
-    player_stats: ActorStats = field(default_factory=lambda: ActorStats(name="Player", str=12, agi=10))  # Player stats; HP derived from roll
+    player_hp: int = 10         # Current HP; hooks to future DamageSystem
+    max_player_hp: int = 10  # For balancing; config.yaml binding later
     mv_limit: int = 6       # Default MV; exploration mode overrides to 99 per GD
     exploration_mv: int = 99  # Per GD relaxation; set via config
-    win_message: str = ""   # Victory/defeat; depends on player_stats.hp and goal_pos
+    win_message: str = ""   # Victory/defeat; depends on player_hp and goal_pos
     win_message_time: float = 0.0  # Timestamp for UI fade; links to drawing logic
     WIN_DURATION: float = 10.0  # Display time; configurable
 
@@ -58,22 +56,11 @@ class GameState:
             self.commanded_path = None
 
     def update_hp(self, damage: int):
-        """Adjust player HP via ActorStats; clamp to 0, set win/loss."""
-        self.player_stats.update_hp(damage)
-        if self.player_stats.hp <= 0:
-            self.defeated = True
+        """Adjust player HP; clamp to 0, set win/loss."""
+        self.player_hp = max(0, self.player_hp - damage)
+        if self.player_hp <= 0:
             self.win_message = "Defeated... Game Over!"
             self.win_message_time = 0.0  # Will be set externally
-
-    @property
-    def player_hp(self) -> int:
-        """Getter: HP from player_stats for backward compat."""
-        return self.player_stats.hp
-
-    @property
-    def max_player_hp(self) -> int:
-        """Getter: Max HP from player_stats."""
-        return self.player_stats.max_hp
 
     def switch_mode(self, new_mode: str):
         """Switch game_mode; reset mode-specific vars per GD."""
