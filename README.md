@@ -19,32 +19,32 @@ This project is a 2D hex-based RPG inspired by Dragon Warriors (DW), built with 
   - Switch with 'C' key.
 
 ### Player Mechanics
-- **HP**: Starts at 10.
-- **MV**: 6 hexes limit in combat mode.
+- **HP**: Rolled as d6 * (STR//2 + 1) where STR defaults to 12, resulting in variable starting HP (e.g., 6-36); displays max HP for health bars.
+- **MV**: 6 hexes in combat mode; exploration allows 99.
+- **Stats**: Players have STR (default 12), AGI (default 10), MR (STR+AGI) for future magic resistance and damage bonuses.
 - **Attacks**:
-  - Melee: d6 damage if adjacent (distance=1).
-  - Auto-attack in combat: Every 2 seconds if adjacent.
-- **Abilities**: Click to plan movement paths; paths highlight in yellow.
+  - Melee: d6 damage (+ STR bonus multiplier) if adjacent (distance=1).
+  - Auto-attack in combat: Every 2 seconds if adjacent after movements.
+- **Abilities**: Click to queue movement paths; paths highlight yellow; validated asynchronously by server.
 
 ### Enemy Mechanics
-- **HP**: Starts at 10.
-- **MV**: Unlimited for chasing.
-- **AI Behaviors**:
-  - **Chase**: Within 10 hexes, direct pursuit towards player.
-  - **Patrol**: Random nearby hexes outside chase distance.
-  - **Retreat**: Away from player if HP ≤ 30% (3 or less).
+- **HP**: Fixed at 10; displayed with health bars.
+- **MV**: Unlimited for chasing; respectable MV limits in A* calculations.
+- **AI Behaviors** (managed by AISystem with throttling):
+  - **Chase**: Within 15 hexes (configurable), pursue towards adjacent free hex to player.
+  - **Patrol**: Random nearby hexes outside chase range; includes free hex selection to occupy valid positions.
+  - **Retreat**: Move away from player if HP ≤30% (3 or less); prioritizes distance for safety.
 - **Attacks**:
   - Melee: d6 if distance=1.
-  - Ranged: d6 minus (distance-1) if distance ≤3 (config: ENEMY_RANGED_ATTACK_ENABLED=False by default).
-- **Movement**: Mirrors player movement logic for consistency.
+  - Ranged: d6 - (distance-1) if distance ≤3 and enabled (ENEMY_RANGED_ATTACK_ENABLED=false by default).
+- **Movement**: Simultaneous LERP during lockstep execution phases; queuing and path planning matches player logic.
 
-### Combat Round Structure
-1. Player plans path (planned_path set).
-2. Combat tick (every TICK_TIME=3.0s):
-   - Player moves along planned path.
-   - Enemy takes turn: Recalculates path based on AI, then moves.
-   - Enemies attack if within range (random d6 damage).
-3. Player auto-attacks if adjacent to enemy (d6 damage every 2s).
+### Combat Round Structure (Lockstep)
+1. **Planning Phase**: Player clicks to set planned path (highlighted); CombatSystem stores enemy plans silently (no immediate moves).
+2. **Execution Phase** (every TICK_TIME=3.0s):
+   - Player and enemies move simultaneously along planned paths (LERP animation).
+   - After all movements complete, resolve attacks based on final positions (no interruption).
+3. **Auto-Attacks**: Player auto-attacks adjacent enemies (d6 damage) post-movement if alive; enemies auto-attack player.
 
 ### Terrain Types
 - **Plain** (green, ~80%): Normal movement.
@@ -68,33 +68,40 @@ This project is a 2D hex-based RPG inspired by Dragon Warriors (DW), built with 
 - **Rejection Feedback**: Rejected paths flash red for 1s, with message.
 
 ## Technical Architecture
-- **Client**: Pygame for rendering, input, game loop.
-- **Server**: Flask-based, handles validation.
+- **Client**: Pygame for rendering, input, game loop. Modular split into subsystems (state, combat, AI, rendering).
+- **Server**: Flask-based, handles move path validation with A* algorithm.
+- **Configuration**: Centralized in `core/config.yaml`, loaded via `core/config.py` for easy customization.
 - **Package Layout**:
-  - `client/`: Client-side logic.
-    - `game.py`: Main game loop, modes, drawing.
-    - `enemy.py`: Enemy AI, movement, rendering.
-    - `map/hex_grid.py`: Subclass of core HexGrid with Pygame rendering.
-    - `actors/base.py`: Actor dataclasses (Player, Enemy).
-    - `actors/ai.py`: Enemy AI state machine (chase, patrol, retreat).
-    - `combat/scheduler.py`: Event scheduler for timed actions.
-    - `network/client.py`: HTTP client with retry/backoff.
-    - `ui/manager.py`: UI manager for messages, health bars, sand-clock.
-    - `input/`, `rendering/`: (Stub) Input handling, additional rendering.
-  - `core/`: Shared logic.
-    - `config.py`: Constants (TICK_TIME, etc.).
-    - `hex/grid.py`: HexGrid core class (logic).
-    - `hex/utils.py`: Hex utilities (distance, neighbors).
-    - `pathfinding/a_star.py`: A* pathfinding algorithm.
-  - `server/`: Server-side validation.
-    - `app.py`: Flask server.
-    - `routes/map.py`: Move path validation route.
-    - `validation.py`, `models.py`: (Stub) Additional validation and Pydantic models.
-  - `tests/`: Unit tests.
-    - `test_hex.py`: Tests for hex utilities.
-    - `test_pathfinding.py`: Tests for A* algorithm.
-    - `test_combat.py`, `test_network.py`: (Stub).
-  - `utils/`: Remaining utilities (dice, draw helpers).
+  - `client/`: Client-side logic and rendering.
+    - `game.py`: Main Pygame loop, event handling, drawing; integrates subsystems like CombatSystem and AISystem.
+    - `game_state.py`: Central GameState dataclass for mutable game state (player/enemies pos, mode, HP, etc.); prevents globals.
+    - `enemy.py`: Enemy class with HP, movement, AI path calculation (chase/patrol/retreat), and rendering.
+    - `actors/base.py`: ActorStats dataclass for player/enemy stats (STR/AGI/HP/MR, rolled on init), extensible for future character creation.
+    - `combat_system.py`: CombatSystem class for lockstep combat rounds (plan then execute phases), handling player/enemy paths and attack resolution.
+    - `ai_system.py`: AISystem class for batched enemy AI decisions, throttling updates to reduce spam and improve performance.
+    - `map/hex_grid.py`: HexGrid subclass of core HexGrid, adds Pygame rendering and path highlighting.
+    - `map/tile.py`: Tile class for terrain types (plain, forest, blocked), with colors and costs.
+    - `network/client.py`: NetworkClient class for async HTTP requests with retry and backoff for server communication.
+    - `render/character_renderer.py`, `render/enemy_renderer.py`: Renderer classes for animated sprite drawing (player/enemies).
+    - `ui/manager.py`: UIManager class for drawing health bars, attack indicators, sand-clock, messages, and popups.
+    - `input/`, `rendering/`: Stub modules for future input handling and additional rendering logic.
+  - `core/`: Shared logic between client and server.
+    - `config.py`: Loads `config.yaml` for configurable settings (timers, sprites, combat params); supports easy modding without code changes.
+    - `hex/grid.py`: HexGrid class for core hex math, tile generation, and axial coordinate conversions.
+    - `hex/utils.py`: Utilities for hex neighbors and distance calculations.
+    - `pathfinding/a_star.py`: A* pathfinding with cost, obstacle, and MV limit support.
+  - `server/`: Server-side validation and rules enforcement.
+    - `app.py`: Main Flask app with route handlers.
+    - `routes/map.py`: Blueprint for /api/move_path validation; reconstructs client grid state for server-side A* computation.
+    - `models.py`, `validation.py`: Stub Pydantic models and additional validation logic for future expansions.
+  - `tests/`: Unit tests for core functions.
+    - `test_hex.py`: Hex distance, neighbors, coordinate conversions.
+    - `test_pathfinding.py`: A* pathfinding with blockers, MV limits, costs.
+    - `test_combat.py`, `test_network.py`: (Stub) Combat calculations, network requests.
+  - `utils/`: Utilities and helpers.
+    - `dice.py`: Dice rolling for combat (d6 for damage, extensible to d20/d100).
+    - `draw_utils.py`, `draw_combat_ui.py`: Pygame drawing helpers for UI elements (health bars, sand-clock).
+    - `generate_sprite.py`: Script to generate placeholder sprite assets (can be ran standalone).
 ## Developer Rules
 Granulate the game mechanics into multiple files, so that each is not very big (max in the range of 500-1000 lines of code, this limit can in rare occasions be extended).
 
@@ -103,12 +110,17 @@ Make most features and perks configurable, preferably through config files or ea
 Include complete comments at the beginning of each file, and also inside the functions, classes, or other game mechanics and calculations.
 
 ## Recent Changes
-- **Package Layout Refactor**: Introduced modular structure with `client/`, `core/`, `server/`, `tests/`, `utils/`. Moved utilities to `core/`, extracted hex grid logic to `core/hex/grid.py`, inherited by `client/map/hex_grid.py` for rendering.
-- **New Modules**: Added `client/actors/base.py` (Actor dataclasses), `client/actors/ai.py` (Enemy AI state machine), `client/combat/scheduler.py` (Event queue), `client/network/client.py` (Network client with retry), `client/ui/manager.py` (UI elements).
-- **Configuration**: Centralized settings to `core/config.yaml`, loaded in `core/config.py`.
-- **Unit Tests**: Added `tests/test_hex.py` and `tests/test_pathfinding.py` for core functions.
+- **Modular Refactor**: Split monolithic `game.py` into subsystems: `GameState` for centralized state management, `CombatSystem` for lockstep combat logic, `AISystem` for throttled enemy AI, and separate renderers (`CharacterRenderer`, `EnemyRenderer`) for sprite handling.
+- **Actor Stats**: Introduced `ActorStats` dataclass for player/enemy stats (STR/AGI/HP/MR) with randomized HP rolling based on STR, enabling future character customization and magic resistance mechanics.
+- **Lockstep Combat**: Implemented true simultaneous movement in combat rounds: plan phase stores actions, execute phase moves all entities at once, then resolves attacks.
+- **Enhanced AI**: Enemy behaviors (chase/patrol/retreat) managed by `AISystem` with decision-making logic based on distance, HP thresholds, and configurable ranges.
+- **Async Server Validation**: Network requests handled asynchronously with retry/backoff; rejection feedback includes path flashing and messages.
+- **Configuration System**: All balance/timers (e.g., MV limits, attack intervals) centralized in `core/config.yaml` for easy modding without code changes.
+- **UI Manager**: Added `UIManager` for centralized drawing of health bars, attack arrows, sand-clock, and on-screen messages.
+- **Pathfinding Extensions**: A* algorithm supports MV limits per mode, cost-based terrain (forests), and obstacle avoidance.
+- **Unit Tests**: Expanded test coverage for hex utilities, pathfinding, with stubs for combat and network tests; run with `python -m pytest tests/`.
 
-This ensures maintainability, modularity, and easier collaboration. Large files like the current `client/game.py` (over 600 lines) should be split into smaller modules (e.g., separate combat logic, rendering, input handling).
+This architecture promotes maintainability, configurability, and extensibility. Core logic is shared in `core/`, rendering isolated in `client/`, validation server-side. Features like magic, equipment, or multi-level maps can be added by extending existing dataclasses (e.g., ActorStats) and subsystems.
 
 ## Testing
 Unit tests are added for core functions:

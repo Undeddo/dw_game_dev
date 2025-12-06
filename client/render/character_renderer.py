@@ -9,6 +9,7 @@ Grand Scheme: Provides modular sprite management for the game's visual layer, en
 
 import pygame
 import os
+from pathlib import Path
 
 class CharacterRenderer:
     def __init__(self, spritesheet_path='client/sprites/character.png', frame_count=8, frame_size=(64, 64)):
@@ -20,10 +21,11 @@ class CharacterRenderer:
         self.frames = []
         self.is_moving = False
 
-        # Load spritesheet
-        full_path = os.path.join(os.getcwd(), spritesheet_path)
+        # Load spritesheet using absolute path relative to module location
+        module_dir = Path(__file__).parent
+        full_path = module_dir.parent / 'sprites' / 'character.png'
         try:
-            spritesheet = pygame.image.load(full_path).convert_alpha()
+            spritesheet = pygame.image.load(str(full_path)).convert_alpha()
             sheet_width = spritesheet.get_width()
             sheet_height = spritesheet.get_height()
             frame_width, frame_height = frame_size
@@ -33,12 +35,13 @@ class CharacterRenderer:
                     rect = pygame.Rect(i * frame_width, 0, frame_width, frame_height)
                     frame = spritesheet.subsurface(rect)
                     self.frames.append(frame.copy())  # Copy to prevent subsurface dependency
-        except FileNotFoundError:
+        except (FileNotFoundError, pygame.error):
             print(f"Warning: Spritesheet not found at {full_path}. Using placeholder.")
-            # Create dummy frames if spritesheet missing
+            # Create dummy frames if spritesheet missing - fully fill them so they're visible
             self.frames = [pygame.Surface(frame_size, pygame.SRCALPHA) for _ in range(frame_count)]
             for i, surf in enumerate(self.frames):
-                pygame.draw.rect(surf, (255 - i * 30, 100, i * 30), surf.get_rect(), 1)
+                # Fill the entire surface with color instead of just an outline
+                pygame.draw.rect(surf, (255 - i * 30, 100, i * 30), surf.get_rect())
                 pygame.draw.circle(surf, (255, 255, 255), (frame_size[0]//2, frame_size[1]//2), 20)
 
     def update(self, dt, is_moving_now):

@@ -9,6 +9,7 @@ Grand Scheme: Modular renderer for enemy characters, enabling rich representatio
 
 import pygame
 import os
+from pathlib import Path
 
 class EnemyRenderer:
     def __init__(self, spritesheet_path='client/sprites/enemy.png', frame_count=8, frame_size=(64, 64)):
@@ -26,10 +27,11 @@ class EnemyRenderer:
         self.is_moving = False
         frame_width, frame_height = self.frame_size  # Define for all blocks
 
-        # Load enemy spritesheet (parallel to character_renderer.py's try/except)
-        full_path = os.path.join(os.getcwd(), spritesheet_path)
+        # Load enemy spritesheet using absolute path relative to module location
+        module_dir = Path(__file__).parent
+        full_path = module_dir.parent / 'sprites' / 'enemy.png'
         try:
-            spritesheet = pygame.image.load(full_path).convert_alpha()
+            spritesheet = pygame.image.load(str(full_path)).convert_alpha()
             sheet_width = spritesheet.get_width()
             sheet_height = spritesheet.get_height()
             frame_width, frame_height = self.frame_size
@@ -45,9 +47,8 @@ class EnemyRenderer:
             print(f"Warning: Enemy spritesheet not found at {full_path}. Generating red-tinted player sprite or placeholder.")
             # Fallback: Generate or tint existing sprite (references utils/generate_sprite.py and character_util.png)
             try:
-                char_path = 'client/sprites/character.png'
-                char_full = os.path.join(os.getcwd(), char_path)
-                char_sheet = pygame.image.load(char_full).convert_alpha()
+                char_full = module_dir.parent / 'sprites' / 'character.png'
+                char_sheet = pygame.image.load(str(char_full)).convert_alpha()
                 if char_sheet.get_width() >= self.frame_count * frame_width:
                     for i in range(self.frame_count):
                         rect = pygame.Rect(i * frame_width, 0, frame_width, frame_height)
@@ -57,10 +58,10 @@ class EnemyRenderer:
                 else:
                     raise FileNotFoundError
             except (FileNotFoundError, pygame.error):
-                # Ultimate fallback: Colored circles (references character_renderer.py placeholder)
+                # Ultimate fallback: Colored circles - fully filled for visibility
                 self.frames = [pygame.Surface(self.frame_size, pygame.SRCALPHA) for _ in range(self.frame_count)]
                 for i, surf in enumerate(self.frames):
-                    pygame.draw.circle(surf, (255, 0, 0), (frame_size[0]//2, frame_size[1]//2), 25)  # Red circle for simple enemy
+                    pygame.draw.rect(surf, (255 - i * 30, 0, i * 30), surf.get_rect())  # Filled red-ish rectangles
                     pygame.draw.circle(surf, (255, 255, 255), (frame_size[0]//2, frame_size[1]//2), 20)  # Inner white for eye-like effect
 
     def update(self, dt, is_moving_now):
