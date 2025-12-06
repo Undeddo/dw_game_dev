@@ -316,128 +316,128 @@ while running:
         if rejected_path:
             rejected_path = []
 
-# Path-following movement handled by CombatSystem for lockstep execution
-combat_system.update_positions(dt, grid.hex_size, screen, MOVE_SPEED)
+    # Path-following movement handled by CombatSystem for lockstep execution
+    combat_system.update_positions(dt, grid.hex_size, screen, MOVE_SPEED)
 
-# Enemy path-following movement and attacks
-for enem in enemies:
-    if enem.hp > 0:
-        # Update enemy movement if they have a path
-        if enem.is_moving and enem.queued_path and enem.current_path_index < len(enem.queued_path):
-            enemy_path_complete = enem.update_movement(grid.hex_size, screen, MOVE_SPEED, dt)
+    # Enemy path-following movement and attacks
+    for enem in enemies:
+        if enem.hp > 0:
+            # Update enemy movement if they have a path
+            if enem.is_moving and enem.queued_path and enem.current_path_index < len(enem.queued_path):
+                enemy_path_complete = enem.update_movement(grid.hex_size, screen, MOVE_SPEED, dt)
 
-            # Attack if path complete and within range
-            if enemy_path_complete and enem.hp > 0:
-                dist = hex_distance(enem.pos[0], enem.pos[1], char_pos[0], char_pos[1])
-                if not state.defeated and (dist == 1 or (dist <= 3 and ENEMY_RANGED_ATTACK_ENABLED)):  # No more attacks on dead player
-                    if dist == 1:
-                        damage = roll_d6()
-                        msg = f"Enemy melee attack for {damage}!"
-                    else:
-                        damage = max(0, roll_d6() - (dist - 1))
-                        msg = f"Enemy ranged attack for {damage} (distance {dist})!"
-                    if damage:
-                        state.update_hp(damage)  # Update via GameState to sync HP
-                        attack_indicators.append((tuple(enem.screen_pos), tuple(char_screen_pos), current_time))
-                        print(f"{msg} Player HP: {state.player_hp}")
+                # Attack if path complete and within range
+                if enemy_path_complete and enem.hp > 0:
+                    dist = hex_distance(enem.pos[0], enem.pos[1], char_pos[0], char_pos[1])
+                    if not state.defeated and (dist == 1 or (dist <= 3 and ENEMY_RANGED_ATTACK_ENABLED)):  # No more attacks on dead player
+                        if dist == 1:
+                            damage = roll_d6()
+                            msg = f"Enemy melee attack for {damage}!"
+                        else:
+                            damage = max(0, roll_d6() - (dist - 1))
+                            msg = f"Enemy ranged attack for {damage} (distance {dist})!"
+                        if damage:
+                            state.update_hp(damage)  # Update via GameState to sync HP
+                            attack_indicators.append((tuple(enem.screen_pos), tuple(char_screen_pos), current_time))
+                            print(f"{msg} Player HP: {state.player_hp}")
 
 
-# Combat round tick: Execute planned actions via CombatSystem
-if game_mode == 'combat' and (current_time - last_cr_start >= TICK_TIME):
-    combat_system.execute_round_tick()
+    # Combat round tick: Execute planned actions via CombatSystem
+    if game_mode == 'combat' and (current_time - last_cr_start >= TICK_TIME):
+        combat_system.execute_round_tick()
 
-    # Enemy AI: Use AISystem for modular behavior, only in combat mode to reduce spam
+        # Enemy AI: Use AISystem for modular behavior, only in combat mode to reduce spam
+        if game_mode == 'combat':
+            ai_system.update_ai(enemies, char_pos)
+
+    # Draw
+    screen.fill((0, 0, 0))
+    grid.draw(screen)
+
+    char_renderer.draw_character(screen, int(char_screen_pos[0]), int(char_screen_pos[1]))
+
+    # Draw death overlay if player is dead
+    if state.defeated:
+        dead_overlay = pygame.Surface((32, 32))
+        dead_overlay.fill((100, 100, 100))
+        dead_overlay.set_alpha(150)
+        screen.blit(dead_overlay, (int(char_screen_pos[0] - 16), int(char_screen_pos[1] - 16)))
+
+    # Draw enemies
+    for enem in enemies:
+        if enem.hp > 0:
+            enem.draw(screen, dt)
+
+    # Draw health bars (now pulls from state with ActorStats backing)
+    draw_health_bar(screen, int(char_screen_pos[0]), int(char_screen_pos[1]), state.player_hp, state.max_player_hp)
+    for enem in enemies:
+        if enem.hp > 0:
+            draw_health_bar(screen, int(enem.screen_pos[0]), int(enem.screen_pos[1]), enem.hp, enem.max_hp)
+
+    # Draw attack indicators
+    for attacker_pos, victim_pos, start_time in attack_indicators.copy():
+        if current_time - start_time > 5:
+            attack_indicators.remove((attacker_pos, victim_pos, start_time))
+        else:
+            # Check if this is an enemy attack (based on position matching an enemy)
+            is_enemy_attack = False
+            for enem in enemies:
+                if enem.hp > 0 and tuple(enem.screen_pos) == attacker_pos:
+                    is_enemy_attack = True
+                    enem.renderer.draw_attack_arrow(screen, attacker_pos, victim_pos, color=(255, 100, 100))
+                    break
+            
+            # If not an enemy attack, draw with default method
+            if not is_enemy_attack:
+                draw_attack_arrow(screen, attacker_pos, victim_pos, color=(200, 200, 200))
+
+
+
+    # Draw quest goal star (yellow polygon; references hex_to_screen)
+    goal_screen = hex_to_screen(goal_pos[0], goal_pos[1], grid.hex_size, screen)
+    pygame.draw.polygon(screen, (255, 255, 0), [  # Yellow star for goal
+        (goal_screen[0], goal_screen[1] - 15),
+        (goal_screen[0] + 6, goal_screen[1] - 5),
+        (goal_screen[0] + 15, goal_screen[1] + 2),
+        (goal_screen[0] + 6, goal_screen[1] + 9),
+        (goal_screen[0], goal_screen[1] + 15),
+        (goal_screen[0] - 6, goal_screen[1] + 9),
+        (goal_screen[0] - 15, goal_screen[1] + 2),
+        (goal_screen[0] - 6, goal_screen[1] - 5),
+    ])
+
+    # Draw combat sand clock and round counter
     if game_mode == 'combat':
-        ai_system.update_ai(enemies, char_pos)
+        clock_x, clock_y = SCREEN_WIDTH - 60, 60  # Top-right corner
+        size = 30  # Size of hourglass
+        elapsed = min(TICK_TIME, current_time - last_cr_start)
+        progress = elapsed / TICK_TIME
+        draw_sand_clock(screen, clock_x, clock_y, size, progress, font, state.combat_round)
 
-# Draw
-screen.fill((0, 0, 0))
-grid.draw(screen)
+        # Draw combat UI (HP bars, engagement highlights; references draw_sand_clock for consistent draw order)
+        # Commented out for multiple enemies - need to update the UI to handle list
+        # draw_combat_ui(screen, font, player_hp, 10, enemy.hp, enemy_max_hp, tuple(char_pos), tuple(enemy.pos), tuple(char_screen_pos), tuple(enemy.screen_pos))
 
-char_renderer.draw_character(screen, int(char_screen_pos[0]), int(char_screen_pos[1]))
+    # Draw rejected message if active
+    if rejected_message and (current_time - rejected_message_time < MESSAGE_DURATION):
+        rejected_text_surface = font.render(rejected_message, True, (255, 0, 0)) # Red text
+        text_rect = rejected_text_surface.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 100))
+        screen.blit(rejected_text_surface, text_rect)
 
-# Draw death overlay if player is dead
-if state.defeated:
-    dead_overlay = pygame.Surface((32, 32))
-    dead_overlay.fill((100, 100, 100))
-    dead_overlay.set_alpha(150)
-    screen.blit(dead_overlay, (int(char_screen_pos[0] - 16), int(char_screen_pos[1] - 16)))
+    # Draw win message if active (references rejected_message display)
+    if win_message and (current_time - win_message_time < state.WIN_DURATION):
+        win_text_surface = font.render(win_message, True, (0, 255, 0)) # Green text
+        text_rect = win_text_surface.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 150))
+        screen.blit(win_text_surface, text_rect)
 
-# Draw enemies
-for enem in enemies:
-    if enem.hp > 0:
-        enem.draw(screen, dt)
+    # Draw tutorial text
+    mode_text = font.render(f"Mode: {game_mode} (E: exploration, C: combat)", True, (255, 255, 255))
+    screen.blit(mode_text, (10, 10))
+    tutorial_text = font.render("Left-click a hex to queue movement. Server validates on click and starts movement if approved.", True, (255, 255, 255))
+    screen.blit(tutorial_text, (10, 30))
+    quit_text = font.render("Close window to quit. Server logs moves.", True, (255, 255, 255))
+    screen.blit(quit_text, (10, 50))
 
-# Draw health bars (now pulls from state with ActorStats backing)
-draw_health_bar(screen, int(char_screen_pos[0]), int(char_screen_pos[1]), state.player_hp, state.max_player_hp)
-for enem in enemies:
-    if enem.hp > 0:
-        draw_health_bar(screen, int(enem.screen_pos[0]), int(enem.screen_pos[1]), enem.hp, enem.max_hp)
-
-# Draw attack indicators
-for attacker_pos, victim_pos, start_time in attack_indicators.copy():
-    if current_time - start_time > 5:
-        attack_indicators.remove((attacker_pos, victim_pos, start_time))
-    else:
-        # Check if this is an enemy attack (based on position matching an enemy)
-        is_enemy_attack = False
-        for enem in enemies:
-            if enem.hp > 0 and tuple(enem.screen_pos) == attacker_pos:
-                is_enemy_attack = True
-                enem.renderer.draw_attack_arrow(screen, attacker_pos, victim_pos, color=(255, 100, 100))
-                break
-        
-        # If not an enemy attack, draw with default method
-        if not is_enemy_attack:
-            draw_attack_arrow(screen, attacker_pos, victim_pos, color=(200, 200, 200))
-
-
-
-# Draw quest goal star (yellow polygon; references hex_to_screen)
-goal_screen = hex_to_screen(goal_pos[0], goal_pos[1], grid.hex_size, screen)
-pygame.draw.polygon(screen, (255, 255, 0), [  # Yellow star for goal
-    (goal_screen[0], goal_screen[1] - 15),
-    (goal_screen[0] + 6, goal_screen[1] - 5),
-    (goal_screen[0] + 15, goal_screen[1] + 2),
-    (goal_screen[0] + 6, goal_screen[1] + 9),
-    (goal_screen[0], goal_screen[1] + 15),
-    (goal_screen[0] - 6, goal_screen[1] + 9),
-    (goal_screen[0] - 15, goal_screen[1] + 2),
-    (goal_screen[0] - 6, goal_screen[1] - 5),
-])
-
-# Draw combat sand clock and round counter
-if game_mode == 'combat':
-    clock_x, clock_y = SCREEN_WIDTH - 60, 60  # Top-right corner
-    size = 30  # Size of hourglass
-    elapsed = min(TICK_TIME, current_time - last_cr_start)
-    progress = elapsed / TICK_TIME
-    draw_sand_clock(screen, clock_x, clock_y, size, progress, font, state.combat_round)
-
-    # Draw combat UI (HP bars, engagement highlights; references draw_sand_clock for consistent draw order)
-    # Commented out for multiple enemies - need to update the UI to handle list
-    # draw_combat_ui(screen, font, player_hp, 10, enemy.hp, enemy_max_hp, tuple(char_pos), tuple(enemy.pos), tuple(char_screen_pos), tuple(enemy.screen_pos))
-
-# Draw rejected message if active
-if rejected_message and (current_time - rejected_message_time < MESSAGE_DURATION):
-    rejected_text_surface = font.render(rejected_message, True, (255, 0, 0)) # Red text
-    text_rect = rejected_text_surface.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 100))
-    screen.blit(rejected_text_surface, text_rect)
-
-# Draw win message if active (references rejected_message display)
-if win_message and (current_time - win_message_time < state.WIN_DURATION):
-    win_text_surface = font.render(win_message, True, (0, 255, 0)) # Green text
-    text_rect = win_text_surface.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 150))
-    screen.blit(win_text_surface, text_rect)
-
-# Draw tutorial text
-mode_text = font.render(f"Mode: {game_mode} (E: exploration, C: combat)", True, (255, 255, 255))
-screen.blit(mode_text, (10, 10))
-tutorial_text = font.render("Left-click a hex to queue movement. Server validates on click and starts movement if approved.", True, (255, 255, 255))
-screen.blit(tutorial_text, (10, 30))
-quit_text = font.render("Close window to quit. Server logs moves.", True, (255, 255, 255))
-screen.blit(quit_text, (10, 50))
-
-pygame.display.flip()
+    pygame.display.flip()
 
 pygame.quit()
