@@ -14,10 +14,16 @@ from client.enemy import Enemy
 @dataclass
 class GameState:
     """
-    Encapsulates player, enemies, and global state per GAMEDESIGN.md.
-    - References: Player MV/HP from config for combat; enemy pos for AI dependency.
-    - Grand Scheme: Turn game.py into thin manager; all state changes via methods here.
+    Encapsulates all mutable game state information for the Dragon Warriors game.
+    
+    This class centralizes all game state variables to avoid global variables and
+    provide a clean interface for game logic components. It handles player position,
+    enemy states, game modes, combat mechanics, and win/loss conditions.
+    
+    The design follows the principle of keeping game.py thin by moving all state
+    management to this centralized location.
     """
+    
     # Required fields (use None and init in __post_init__ for clarity)
     player_pos: List[int] = field(default_factory=lambda: [0, 0])  # (q, r) as list for mutability
     enemies: List[Enemy] = field(default_factory=list)   # List of Enemy instances; depends on client/enemy.py
@@ -44,7 +50,8 @@ class GameState:
     commanded_path: List[List[int]] = None  # Planned combat path; clears on CR tick
 
     # AI and event timing (centralized to avoid game.py clutter)
-    last_auto_attack: float = 0.0  # Timestamp for combat attacks; depends on dist
+    last_auto_attack: float = 0.0 # Timestamp for combat attacks; depends on dist
+    current_turn: str = 'player' # 'player' or 'enemy' for turn-based combat
 
     def __post_init__(self):
         """Initialize mutable defaults if needed."""
@@ -56,14 +63,53 @@ class GameState:
             self.commanded_path = None
 
     def update_hp(self, damage: int):
-        """Adjust player HP; clamp to 0, set win/loss."""
+        """
+        Update player's HP and check win/loss conditions.
+        
+        Args:
+            damage (int): Damage to apply to player HP (negative values heal)
+        """
         self.player_hp = max(0, self.player_hp - damage)
         if self.player_hp <= 0:
             self.win_message = "Defeated... Game Over!"
             self.win_message_time = 0.0  # Will be set externally
 
+    def switch_turn(self):
+        """Switch between player and enemy turns in combat mode."""
+        self.current_turn = 'enemy' if self.current_turn == 'player' else 'player'
+        print(f"Turn switched to: {self.current_turn}")
+
+    def is_player_turn(self) -> bool:
+        """
+        Check if it's currently the player's turn in combat mode.
+        
+        Returns:
+            bool: True if it's the player's turn, False otherwise
+        """
+        return self.current_turn == 'player'
+
+    def is_enemy_turn(self) -> bool:
+        """
+        Check if it's currently the enemy's turn in combat mode.
+        
+        Returns:
+            bool: True if it's the enemy's turn, False otherwise
+        """
+        return self.current_turn == 'enemy'
+
     def switch_mode(self, new_mode: str):
-        """Switch game_mode; reset mode-specific vars per GD."""
+        """
+        Switch between exploration and combat game modes.
+        
+        This method handles mode-specific state resets and configurations to ensure
+        proper behavior in each game mode.
+        
+        Args:
+            new_mode (str): Target game mode ('exploration' or 'combat')
+            
+        Raises:
+            ValueError: If an invalid mode is specified
+        """
         if new_mode == 'combat':
             self.game_mode = 'combat'
             self.mv_limit = self.mv_limit  # Default 6; configurable
@@ -77,24 +123,51 @@ class GameState:
             raise ValueError(f"Invalid mode: {new_mode}")
 
     def get_mv_limit(self) -> int:
-        """Return effective MV based on mode; depends on switch_mode."""
+        """
+        Get the effective movement limit based on current game mode.
+        
+        Returns:
+            int: Movement limit for current mode (exploration or combat)
+        """
         return self.exploration_mv if self.game_mode == 'exploration' else self.mv_limit
 
     def get_closest_enemy(self) -> Enemy:
-        """Return closest living enemy with HP > 0; dist deps on hex_distance."""
+        """
+        Find the closest living enemy to the player.
+        
+        Returns:
+            Enemy: Closest living enemy, or None if no enemies are alive
+        """
         from core.hex.utils import hex_distance
         closest = None
         min_dist = float('inf')
+        player_q, player_r = self.player_pos[0], self.player_pos[1]
+        
         for enem in self.enemies:
             if enem.hp > 0:
-                dist = hex_distance(self.player_pos[0], self.player_pos[1], enem.pos[0], enem.pos[1])
+                dist = hex_distance(player_q, player_r, enem.pos[0], enem.pos[1])
                 if dist < min_dist:
                     min_dist = dist
                     closest = enem
         return closest
 
     def check_win_condition(self, current_time: float):
-        """Check if player at goal; set win if so."""
+        """
+        Check if the player has reached the goal position and set win message if so.
+        
+        Args:
+            current_time (float): Current timestamp for win message timing
+        """
         if tuple(self.player_pos) == self.goal_pos and not self.win_message:
             self.win_message = "Victory! You reached the goal hex!"
             self.win_message_time = current_time
+
+    @property
+    def defeated(self):
+        """
+        Check if the player has been defeated (HP <= 0).
+        
+        Returns:
+            bool: True if player is defeated, False otherwise
+        """
+        return self.player_hp <= 0

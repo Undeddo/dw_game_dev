@@ -12,14 +12,27 @@ from client.render.enemy_renderer import EnemyRenderer
 from client.map.tile import Tile
 from core.pathfinding.a_star import a_star
 from core.hex.utils import hex_distance
+from client.actors.base import ActorStats
 
 class Enemy:
-    def __init__(self, start_pos=(5, 5), mv_limit=6, behavior='chase', grid_hex_size=50, screen=None):
+    """
+    Represents an enemy character in the game with AI behavior, movement, and combat capabilities.
+    
+    This class handles all aspects of enemy behavior including pathfinding, movement, AI decision-making,
+    and combat interactions. It's designed to work with the game's turn-based combat system and hex grid.
+    """
+
+    def __init__(self, start_pos=(5, 5), mv_limit=6, behavior='chase', grid_hex_size=50, screen=None, stats=None):
         """
-        Initializes enemy at start hex with MV limit (references player in game.py).
-        Added behavior parameter for AI variants: 'chase', 'patrol', 'retreat'.
-        - References: Player setup in game.py (char_pos, mv_limit), hex_grid.py for tiling.
-        - Purpose: Spawn enemy for combat encounters, with flexible AI path-planning.
+        Initialize an enemy character with starting position and AI parameters.
+        
+        Args:
+            start_pos (tuple): Starting hex coordinates (q, r)
+            mv_limit (int): Maximum movement points for this enemy
+            behavior (str): Default AI behavior ('chase', 'patrol', 'retreat')
+            grid_hex_size (int): Size of hex tiles in pixels
+            screen (pygame.Surface): Game screen surface for position calculations
+            stats (ActorStats): Enemy statistics, if provided; otherwise creates default stats
         """
         self.pos = list(start_pos)  # Hex position (references char_pos)
         # Initialize screen position based on hex position
@@ -28,27 +41,40 @@ class Enemy:
         else:
             self.screen_pos = [400, 300]  # Fallback center position
         self.renderer = EnemyRenderer()  # Renders enemy sprite (references character_renderer usage)
-        self.mv_limit = 99  # Unlimited for enemies to chase, adjustable
-        self.hp = 10  # Basic HP (for later hit mechanics)
-        self.max_hp = 10  # For retreat logic
+        self.mv_limit = mv_limit  # Movement limit for this enemy
+        self.stats = stats or ActorStats(name="Enemy", str=8, agi=8, mv=6)  # Default stats if none provided
+        self.hp = self.stats.hp  # Current HP from stats
+        self.max_hp = self.stats.max_hp  # Max HP from stats
         self.queued_path = []  # Path to follow (references queued_path in game.py)
         self.current_path_index = 0
         self.is_moving = False  # True when animating move (references is_moving)
         self.behavior = behavior  # AI behavior: 'patrol', 'chase', 'retreat'
         self.chase_distance = 10  # Switch to chase if within this hexes
-        self.retreat_threshold = 3  # Retreat if HP below this percentage
+        self.retreat_threshold = 0.3  # Retreat if HP below this percentage (0.3 = 30%)
         self.targeting_player = False  # True if this enemy is targeting the player
+        self.attack_this_turn = False  # Flag for whether enemy should attack this turn
 
     def set_screen_pos(self, screen_pos):
         """
-        Updates enemy screen position (called from game.py after hex_to_screen).
-        - References: Player screen_pos management in game.py hex_to_screen.
-        - Purpose: Sync visual position for smooth drawing.
+        Update the enemy's screen position based on hex coordinates.
+        
+        Args:
+            screen_pos (list): Screen coordinates [x, y]
         """
         self.screen_pos = list(screen_pos)
 
     def find_free_hex_adjacent_to_target(self, target_pos, grid_tiles, occupied=None):
-        """Find closest free hex within mv_limit range from target, closest to self."""
+        """
+        Find the closest free hex adjacent to a target position within movement limits.
+        
+        Args:
+            target_pos (tuple): Target hex coordinates (q, r)
+            grid_tiles (dict): Grid tiles for pathfinding
+            occupied (set): Set of occupied hex positions
+            
+        Returns:
+            tuple: Closest free hex or None if no valid hex found
+        """
         if occupied is None: occupied = set()
         closest = None
         min_dist = float('inf')
@@ -69,43 +95,99 @@ class Enemy:
 
     def calculate_ai_path(self, player_pos, grid_tiles, enemies, behavior='chase', occupied=None):
         """
-        Enhanced AI: Plan path based on behavior ('chase', 'patrol', 'retreat').
-        - Chase: Towards closest free hex adjacent to player.
-        - Patrol: Random nearby free hex.
-        - Retreat: Free hex furthest from player.
-        - References: a_star from utils/pathfinding.py.
-        - Returns: Planned path or [] if none.
-        - Blocked: Hexes occupied by entities are unpassable except start.
+        Calculate an AI path based on the enemy's current behavior and game state.
+        
+        Args:
+            player_pos (tuple): Player's hex coordinates (q, r)
+            grid_tiles (dict): Grid tiles for pathfinding
+            enemies (list): List of all enemies for collision detection
+            behavior (str): Behavior to use ('chase', 'patrol', 'retreat')
+            occupied (set): Set of occupied hex positions
+            
+        Returns:
+            list: Path as list of hex coordinates or empty list if no valid path
         """
         start_hex = tuple(self.pos)
-        # Calculate occupied positions first
-        if occupied is None:
-            occupied = {tuple(enem.pos) for enem in enemies if enem.hp > 0}
-            occupied.add(tuple(player_pos))
-        if behavior == 'retreat':
-            goal_hex = self.find_retreat_position(player_pos, grid_tiles, occupied)
-        elif behavior == 'patrol':
-            goal_hex = self.find_patrol_position(grid_tiles, occupied)
-        else:  # chase
-                # Find free hex adjacent to player
-                goal_hex = self.find_free_hex_adjacent_to_target(player_pos, grid_tiles, occupied)
-
+        occupied = self._calculate_occupied_positions(enemies, player_pos, occupied)
+        goal_hex = self._determine_goal_hex(player_pos, grid_tiles, occupied, behavior)
+        
         if goal_hex and goal_hex != start_hex:
-            # Modify grid to block occupied hexes except start
-            modified_tiles = {}
-            for k, v in grid_tiles.items():
-                blocked = v.blocked or ((k != start_hex) and (k == tuple(player_pos)))
-                new_tile = Tile(v.type)
-                new_tile.cost = v.cost
-                new_tile.blocked = blocked
-                new_tile.color = v.color
-                modified_tiles[k] = new_tile
+            modified_tiles = self._create_modified_tiles(grid_tiles, start_hex, player_pos)
             path = a_star(start_hex, goal_hex, modified_tiles, self.mv_limit)
             return path or []
         return []
 
+    def _calculate_occupied_positions(self, enemies, player_pos, occupied):
+        """
+        Calculate all positions that are currently occupied by enemies and the player.
+        
+        Args:
+            enemies (list): List of enemy objects
+            player_pos (tuple): Player's position (q, r)
+            occupied (set): Existing set of occupied positions
+            
+        Returns:
+            set: Set of all occupied hex positions
+        """
+        if occupied is None:
+            occupied = {tuple(enem.pos) for enem in enemies if enem.hp > 0}
+            occupied.add(tuple(player_pos))
+        return occupied
+
+    def _determine_goal_hex(self, player_pos, grid_tiles, occupied, behavior):
+        """
+        Determine the goal hex based on enemy behavior and current game state.
+        
+        Args:
+            player_pos (tuple): Player's position (q, r)
+            grid_tiles (dict): Grid tiles for pathfinding
+            occupied (set): Set of occupied positions
+            behavior (str): Current behavior ('chase', 'patrol', 'retreat')
+            
+        Returns:
+            tuple: Goal hex coordinates or None if no valid goal found
+        """
+        if behavior == 'retreat':
+            return self.find_retreat_position(player_pos, grid_tiles, occupied)
+        elif behavior == 'patrol':
+            return self.find_patrol_position(grid_tiles, occupied)
+        else:  # chase
+            return self.find_free_hex_adjacent_to_target(player_pos, grid_tiles, occupied)
+
+    def _create_modified_tiles(self, grid_tiles, start_hex, player_pos):
+        """
+        Create a modified version of the grid tiles with specific blocking rules for pathfinding.
+        
+        Args:
+            grid_tiles (dict): Original grid tiles
+            start_hex (tuple): Start hex coordinates (q, r)
+            player_pos (tuple): Player's position (q, r)
+            
+        Returns:
+            dict: Modified grid tiles for pathfinding
+        """
+        modified_tiles = {}
+        for k, v in grid_tiles.items():
+            blocked = v.blocked or ((k != start_hex) and (k == tuple(player_pos)))
+            new_tile = Tile(v.type)
+            new_tile.cost = v.cost
+            new_tile.blocked = blocked
+            new_tile.color = v.color
+            modified_tiles[k] = new_tile
+        return modified_tiles
+
     def find_retreat_position(self, player_pos, grid_tiles, occupied=None):
-        """Find a hex away from player."""
+        """
+        Find a hex that is furthest away from the player to retreat to.
+        
+        Args:
+            player_pos (tuple): Player's position (q, r)
+            grid_tiles (dict): Grid tiles for pathfinding
+            occupied (set): Set of occupied positions
+            
+        Returns:
+            tuple: Retreat position or None if no valid position found
+        """
         if occupied is None: occupied = set()
         px, py = player_pos
         max_dist = 0
@@ -123,7 +205,16 @@ class Enemy:
         return best_hex
 
     def find_patrol_position(self, grid_tiles, occupied=None):
-        """Find a random nearby unblocked hex."""
+        """
+        Find a random nearby unblocked hex for patrol behavior.
+        
+        Args:
+            grid_tiles (dict): Grid tiles for pathfinding
+            occupied (set): Set of occupied positions
+            
+        Returns:
+            tuple: Patrol position or None if no valid position found
+        """
         if occupied is None: occupied = set()
         from random import choice
         candidates = []
@@ -140,9 +231,10 @@ class Enemy:
 
     def start_movement(self, path):
         """
-        Queues enemy movement path and starts it (references game.py path setting).
-        - References: queued_path, current_path_index, is_moving in game.py combat.
-        - Purpose: Initiate smooth enemy move after AI path calculation.
+        Start movement along a planned path.
+        
+        Args:
+            path (list): List of hex coordinates representing the movement path
         """
         self.queued_path = path
         self.current_path_index = 0
@@ -152,7 +244,16 @@ class Enemy:
 
     def update_movement(self, grid_hex_size, screen, move_speed, dt):
         """
-        Updates enemy position during movement, mirroring the player's path-following logic exactly.
+        Update the enemy's position during movement using LERP interpolation for smooth animation.
+        
+        Args:
+            grid_hex_size (int): Size of hex tiles in pixels
+            screen (pygame.Surface): Game screen surface
+            move_speed (float): Movement speed in pixels per second
+            dt (float): Delta time for smooth animation
+            
+        Returns:
+            bool: True if movement is complete, False otherwise
         """
         if self.is_moving and self.queued_path and self.current_path_index < len(self.queued_path):
             target_hex = self.queued_path[self.current_path_index]
@@ -160,12 +261,12 @@ class Enemy:
             dx = target_screen[0] - self.screen_pos[0]
             dy = target_screen[1] - self.screen_pos[1]
             dist = math.hypot(dx, dy)
-            if dist < 10:
+            if dist < 10:  # Arrived at target hex
                 self.screen_pos = list(target_screen)
                 self.pos = list(target_hex)
                 self.current_path_index += 1
                 print(f"Enemy reached hex: {target_hex}")
-            else:
+            else:  # Continue moving toward target
                 t = min(1.0, (move_speed * dt) / dist)
                 self.screen_pos[0] += dx * t
                 self.screen_pos[1] += dy * t
@@ -179,42 +280,54 @@ class Enemy:
         return False  # Still moving or completed
 
     def hex_to_screen(self, q, r, size, screen):
-        """Convert hex coordinates to screen coordinates."""
+        """
+        Convert hex coordinates to screen coordinates for rendering.
+        
+        Args:
+            q (int): Hex coordinate q
+            r (int): Hex coordinate r
+            size (int): Size of hex tiles in pixels
+            screen (pygame.Surface): Game screen surface
+            
+        Returns:
+            tuple: Screen coordinates (x, y)
+        """
         x = size * 3/2 * q
         y = size * math.sqrt(3) * (r + q/2)
         return (int(x + screen.get_width() // 2), int(y + screen.get_height() // 2))
 
     def take_turn(self, enemies, player_pos, grid_tiles, attack_enabled=False):
         """
-        Enemy turn: Decide behavior and calculate AI path (references game.py combat tick).
-        - Behavior logic: Retreat if low HP, chase if close, patrol if far.
-        - References: game.py combat round advance ('start planned movement').
-        - Purpose: Dynamic AI for more engaging gameplay.
+        Execute one turn of enemy AI behavior including path planning and movement decisions.
+        
+        Args:
+            enemies (list): List of all enemies for collision detection
+            player_pos (tuple): Player's position (q, r)
+            grid_tiles (dict): Grid tiles for pathfinding
+            attack_enabled (bool): Whether attacks are enabled in current context
         """
         # Reset attack flag
         self.attack_this_turn = False
 
-        # Decide behavior
+        # Decide behavior based on distance and health
         dist = hex_distance(self.pos[0], self.pos[1], player_pos[0], player_pos[1])
-        if self.hp <= self.retreat_threshold:
+        if self.hp <= self.max_hp * self.retreat_threshold:
             behavior = 'retreat'
         elif dist <= self.chase_distance:
             behavior = 'chase'
         else:
             behavior = 'patrol'
-
         self.targeting_player = (behavior == 'chase')  # Target if chasing player
 
         print(f"Enemy at {self.pos} taking turn - dist to player: {dist}, behavior: {behavior}")
 
-        # If adjacent and attacks enabled, attack instead of moving
-        if attack_enabled and dist <= 3:
+        # If adjacent, attack instead of moving
+        if dist <= 1:
             self.attack_this_turn = True
-
-        if self.attack_this_turn:
             path = []
         else:
             path = self.calculate_ai_path(player_pos, grid_tiles, enemies, behavior)
+
         if path and not self.is_moving:
             self.start_movement(path)
             print(f"Enemy {behavior}ing with path length: {len(path)}")
@@ -223,13 +336,51 @@ class Enemy:
         else:
             print(f"Enemy failed to find path for {behavior}")
 
-        # Return next active state if needed
+    def take_1v1_turn(self, player_pos, grid_tiles):
+        """
+        Execute one turn of enemy AI specifically for 1-on-1 combat scenarios.
+        
+        Args:
+            player_pos (tuple): Player's position (q, r)
+            grid_tiles (dict): Grid tiles for pathfinding
+        """
+        # Reset attack flag
+        self.attack_this_turn = False
+
+        # Decide behavior based on distance and health
+        dist = hex_distance(self.pos[0], self.pos[1], player_pos[0], player_pos[1])
+        if self.hp <= self.max_hp * self.retreat_threshold:
+            behavior = 'retreat'
+        else:
+            behavior = 'chase'
+
+        self.targeting_player = (behavior == 'chase')  # Target if chasing player
+
+        print(f"Enemy at {self.pos} taking 1v1 turn - dist to player: {dist}, behavior: {behavior}")
+
+        # If adjacent, attack instead of moving
+        if dist <= 1:
+            self.attack_this_turn = True
+
+        if self.attack_this_turn:
+            path = []
+        else:
+            path = self.calculate_ai_path(player_pos, grid_tiles, [], behavior)
+        if path and not self.is_moving:
+            self.start_movement(path)
+            print(f"Enemy {behavior}ing with path length: {len(path)}")
+        elif path:
+            print(f"Enemy wants to {behavior} but already moving")
+        else:
+            print(f"Enemy failed to find path for {behavior}")
 
     def draw(self, screen, dt):
         """
-        Renders enemy and updates animation (references game.py draw and char_renderer.update/draw).
-        - References: game.py char_renderer usage, dt from clock.tick.
-        - Purpose: Visuals: Animated red-tinted sprite during move for captivating effect.
+        Render the enemy character on screen and update animation state.
+        
+        Args:
+            screen (pygame.Surface): Game screen surface
+            dt (float): Delta time for animation updates
         """
         self.renderer.update(dt, self.is_moving)
         self.renderer.draw_enemy(screen, int(self.screen_pos[0]), int(self.screen_pos[1]))

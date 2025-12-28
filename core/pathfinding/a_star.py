@@ -10,6 +10,8 @@ import heapq
 from core.hex.utils import get_neighbors, hex_distance
 
 def a_star(start, goal, grid, max_distance=6):
+    start = tuple(start)
+    goal = tuple(goal)
     """A* pathfinding with cost and obstacle support."""
     INF = float('inf')
     if start not in grid or goal not in grid:

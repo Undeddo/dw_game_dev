@@ -1,9 +1,6 @@
-"""
-DW Reference: Lockstep combat rounds (Book 1, p. 39-42), simultaneous resolution.
-Purpose: Manage combat mode logic for true lockstep - plan phase then execute on tick.
+""" Turn-based combat system for Dragon Warriors game.
+Purpose: Manage turn-based combat logic where player and enemy take turns attacking each other.
 Dependencies: client/game_state.py, client/enemy.py, core/pathfinding/a_star.py, core/hex/utils.py.
-Ext Hooks: Future CombatScheduler for advanced rounds; integrates with Player/Enemy stats.
-Combat Only: Called from game.py event/tick handlers; decoupled from rendering.
 """
 
 import time
@@ -13,16 +10,18 @@ from core.hex.utils import hex_distance
 from utils.dice import roll_d6
 from core.config import ENEMY_RANGED_ATTACK_ENABLED
 
-class CombatSystem:
+class TurnBasedCombatSystem:
     """
-    Manages lockstep combat rounds: Plan phase (player clicks plan path, enemies decide paths) followed by Execute phase (tick moves all simultaneously, then attacks resolve).
-    - Dependencies: GameState for pos/enemies, Enemy.take_turn for AI, but intercepts to store instead of immediate execution.
-    - Grand Scheme: Keeps game.py thin; handles planning/execution/stats integration.
+    Manages turn-based combat where player and enemies take turns moving and attacking.
+    
+    This system implements a lockstep combat model where all actions are planned first, then
+    executed simultaneously. It handles path planning for the player, AI decision-making for
+    enemies, movement execution, and attack resolution in a turn-based fashion.
     """
 
     def __init__(self, state: GameState, grid_tiles, grid):
         """
-        Initialize the combat system with game state and grid references.
+        Initialize the turn-based combat system with game state and grid references.
         
         Args:
             state (GameState): Central game state object
@@ -37,7 +36,7 @@ class CombatSystem:
 
     def plan_player_path(self, goal_hex):
         """
-        Plan a player movement path in combat mode.
+        Plan a player movement path during combat turn.
         
         Args:
             goal_hex (tuple): Target hex coordinates (q, r)
@@ -48,18 +47,16 @@ class CombatSystem:
         if self.state.is_moving:
             print("Player still moving, can't plan new path")
             return False
-        
+
         start_hex = tuple(self.state.player_pos)
         mv_limit = self.state.get_mv_limit()
-        
+
         # Block occupied hexes (DW: no occupation)
         self._block_occupied_hexes()
-        
         path = a_star(start_hex, goal_hex, self.grid_tiles, max_distance=mv_limit)
-        
         # Reset blocks
         self._unblock_occupied_hexes()
-        
+
         if path:
             self._store_player_path(path, start_hex)
             return True
@@ -82,7 +79,7 @@ class CombatSystem:
             self.grid_tiles[occupied].blocked = False
 
     def _store_player_path(self, path, start_hex):
-        """Store the planned path and trigger enemy planning."""
+        """Store the planned path for player's turn execution."""
         self.state.commanded_path = path
         self.grid.set_path_highlight([start_hex] + path)
         print(f"Player planned path: {[start_hex] + path}")
@@ -90,9 +87,10 @@ class CombatSystem:
 
     def _plan_enemy_actions(self):
         """
-        Plan enemy actions after player plans their path. Store paths for later execution, don't move yet.
-        - Enemies take turn if close enough or chasing; store path if decided to move.
-        - Throttled to avoid spam; uses Enemy.calculate_ai_path but intercepts for delayed execution.
+        Plan enemy actions after player plans their path. Store paths for later execution on enemy's turn.
+        
+        This method determines behaviors and calculates paths for all enemies, but doesn't execute them yet
+        to maintain the lockstep execution model where all movements happen simultaneously.
         """
         current_time = time.time()
         if current_time - self.last_enemy_plan_time < 0.1:  # Slight delay to reduce spam
@@ -103,55 +101,62 @@ class CombatSystem:
         for enem in self.state.enemies:
             if enem.hp > 0:
                 dist = hex_distance(enem.pos[0], enem.pos[1], self.state.player_pos[0], self.state.player_pos[1])
-                behavior = 'chase' if dist <= enem.chase_distance else 'patrol'
+                behavior = 'chase' if dist <= enem.chase_distance else 'patrol'  # Decide behavior
+
                 # Decide behavior state (chase if chasing, retreat if low HP)
                 if enem.hp <= enem.max_hp * enem.retreat_threshold:
                     behavior = 'retreat'
 
                 path = enem.calculate_ai_path(self.state.player_pos, self.grid_tiles, self.state.enemies, behavior)
                 if path:
-                    self.enemy_planned_paths.append((enem, path))
-                    # Store path only; start_movement called on tick for lockstep
+                    self.enemy_planned_paths.append((enem, path))  # Store path only; start_movement called on tick for lockstep
                     print(f"Enemy {enem.pos} planned {behavior} with path length: {len(path)}")
                 else:
                     # No move: Prepare attack if in range
                     enem.attack_this_turn = (dist <= 3)  # Check ranges later on exec
                     print(f"Enemy {enem.pos} plans no move, attack? {enem.attack_this_turn}")
 
-    def execute_round_tick(self):
+    def execute_turn(self):
         """
-        Execute all planned actions during a combat round tick: move all entities simultaneously, then resolve attacks.
-        - Moves player and enemies if paths set; resets after execution.
-        - Attacks resolve based on final positions after movement is complete.
+        Execute actions for the current turn in combat mode.
+        
+        This method handles both player and enemy turns according to the turn order:
+        - Player's turn: Execute player's planned path
+        - Enemy's turn: Execute all enemy paths simultaneously, then resolve attacks
         """
-        # Execute player path if planned
-        if self.state.commanded_path and not self.state.is_moving:
+        # Player's turn - execute planned path
+        if self.state.is_player_turn() and self.state.commanded_path and not self.state.is_moving:
             self.state.queued_path = self.state.commanded_path
             self.state.current_path_index = 0
             self.state.is_moving = True
             self.state.commanded_path = None
             print(f"Player executing path: {self.state.queued_path}")
 
-        # Execute enemy paths
-        for enem, path in self.enemy_planned_paths:
-            enem.queued_path = path
-            enem.current_path_index = 0
-            enem.is_moving = True
-            print(f"Enemy {enem.pos} path executed on tick")
+        # Enemy's turn - execute planned actions
+        elif self.state.is_enemy_turn():
+            # Execute enemy paths
+            for enem, path in self.enemy_planned_paths:
+                enem.queued_path = path
+                enem.current_path_index = 0
+                enem.is_moving = True
+                print(f"Enemy {enem.pos} path executed on tick")
 
-        # After all executions, resolve attacks (post-movement positions)
-        self._resolve_combat_attacks()
-        self._resolve_1v1_combat()
+            # After all executions, resolve attacks (post-movement positions)
+            self._resolve_combat_attacks()
 
-        # Clear enemy plans after tick
-        self.enemy_planned_paths = []
+            # Clear enemy plans after tick
+            self.enemy_planned_paths = []
+
+            # Switch turns after execution
+            self.state.switch_turn()
 
     def _resolve_combat_attacks(self):
         """
         Resolve combat attacks based on final positions after movement is complete.
-        - Player auto-attacks adjacent enemies
-        - Enemies attack player if in range
-        - Use dice rolls for damage calculation; update HP accordingly
+        
+        This method handles all attack resolution in combat, including player auto-attacks
+        and enemy attacks. It ensures that attacks happen only after all movement is done
+        to maintain the lockstep execution model.
         """
         # Player auto-attack if adjacent to enemy and not moving
         if self.state.player_hp > 0 and not self.state.is_moving:
@@ -166,7 +171,7 @@ class CombatSystem:
                     if closest.hp <= 0:
                         closest.pos = [-999, -999]
                         print("Enemy defeated!")
-                    self.state.last_auto_attack = time.time()
+                        self.state.last_auto_attack = time.time()
 
         # Enemy attacks on player or each other (but focus player-centric)
         for enem in self.state.enemies:
@@ -188,37 +193,6 @@ class CombatSystem:
                     if self.state.player_hp <= 0:
                         print("Player defeated!")
 
-    def _resolve_1v1_combat(self):
-        """
-        Resolve 1-on-1 combat between the player and a single enemy (legacy method, may be deprecated).
-        - Player and enemy take turns attacking each other.
-        - Use dice rolls for damage calculation; update HP accordingly
-        """
-        # Check if there is only one enemy alive
-        alive_enemies = [enem for enem in self.state.enemies if enem.hp > 0]
-        if len(alive_enemies) != 1:
-            return
-
-        enemy = alive_enemies[0]
-        dist = hex_distance(self.state.player_pos[0], self.state.player_pos[1], enemy.pos[0], enemy.pos[1])
-
-        # Player attacks if adjacent
-        if dist == 1 and self.state.player_hp > 0:
-            damage = roll_d6()
-            enemy.hp -= damage
-            print(f"Player attacked enemy for {damage}! Enemy HP: {enemy.hp}")
-            if enemy.hp <= 0:
-                enemy.pos = [-999, -999]
-                print("Enemy defeated!")
-
-        # Enemy attacks if adjacent
-        if dist == 1 and enemy.hp > 0:
-            damage = roll_d6()
-            self.state.update_hp(-damage)
-            print(f"Enemy attacked player for {damage}! Player HP: {self.state.player_hp}")
-            if self.state.player_hp <= 0:
-                print("Player defeated!")
-
     def update_positions(self, dt, grid_hex_size, screen, move_speed):
         """
         Update movement positions during combat execution phase using LERP interpolation.
@@ -236,20 +210,22 @@ class CombatSystem:
             dx = target_screen[0] - self.state.char_screen_pos[0]
             dy = target_screen[1] - self.state.char_screen_pos[1]
             dist = (dx**2 + dy**2)**0.5
+
             if dist < 5:  # Arrived
                 self.state.char_screen_pos = [target_screen[0], target_screen[1]]
                 self.state.player_pos = [target_hex[0], target_hex[1]]
                 self.state.current_path_index += 1
                 print(f"Player reached hex: {target_hex}")
-            else:  # LERP
+            else:
+                # LERP
                 t = min(1.0, (move_speed * dt) / dist)
                 self.state.char_screen_pos[0] += dx * t
                 self.state.char_screen_pos[1] += dy * t
 
-        if self.state.queued_path and self.state.current_path_index >= len(self.state.queued_path):
-            self.state.queued_path = []
-            self.state.current_path_index = 0
-            self.state.is_moving = False
+            if self.state.queued_path and self.state.current_path_index >= len(self.state.queued_path):
+                self.state.queued_path = []
+                self.state.current_path_index = 0
+                self.state.is_moving = False
 
         # Enemy movements (each completes independently but simultaneously)
         for enem in self.state.enemies:

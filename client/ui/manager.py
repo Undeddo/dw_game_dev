@@ -19,8 +19,21 @@ class UIManager:
         draw_hp_bar(screen, x, y, current, max_hp, color, width, height)
 
     def draw_combat_ui(self, screen: pygame.Surface, player_hp, player_max_hp, enemies, player_pos, player_screen_pos):
-        # Call draw_combat_ui or inline
-        pass  # Simplified
+        """
+        Draw combat UI elements including health bars and engagement highlights.
+        - player_hp: Current player HP.
+        - player_max_hp: Maximum player HP.
+        - enemies: List of enemy objects.
+        - player_pos: Player's position in hex coordinates.
+        - player_screen_pos: Player's position in screen coordinates.
+        """
+        # Draw player health bar
+        self.draw_health_bar(screen, player_screen_pos[0], player_screen_pos[1], player_hp, player_max_hp, color=(0, 255, 0))
+        
+        # Draw enemy health bars
+        for enemy in enemies:
+            if enemy.hp > 0:
+                self.draw_health_bar(screen, enemy.screen_pos[0], enemy.screen_pos[1], enemy.hp, enemy.max_hp, color=(255, 0, 0))
 
     def draw_sand_clock(self, screen: pygame.Surface, clock_x, clock_y, size, progress, combat_round):
         draw_sand_clock(screen, clock_x, clock_y, size, progress, self.font, combat_round)
@@ -36,5 +49,9 @@ class UIManager:
     def draw_rejected_message(self, screen: pygame.Surface, message: str, time_shown: float, current_time: float, pos: Tuple[int, int]):
         if current_time - time_shown < MESSAGE_DURATION:
             self.draw_message(screen, message, (255, 0, 0), pos)
+
+    def draw_combat_message(self, screen: pygame.Surface, message: str, time_shown: float, current_time: float, pos: Tuple[int, int]):
+        if current_time - time_shown < MESSAGE_DURATION:
+            self.draw_message(screen, message, (255, 255, 0), pos)
 
 # Usage: ui = UIManager(font); ui.draw_health_bar(screen, x, y, hp, 10)
