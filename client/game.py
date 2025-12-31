@@ -122,7 +122,12 @@ class GameEngine:
         # Queue path to clicked hex
         queued_path = a_star(self.state.player_pos, clicked_hex, self.grid.tiles, max_distance=self.state.mv_limit)
         if queued_path and len(queued_path) > 1:
-            # Validate path with server
+            # Store the path in game state immediately for local use
+            self.state.queued_path = queued_path
+            self.state.current_path_index = 0
+            self.grid.set_path_highlight(queued_path)
+
+            # Validate path with server asynchronously
             path_data = {
                 "start": self.state.player_pos,
                 "end": clicked_hex,
@@ -132,7 +137,6 @@ class GameEngine:
             validation_thread = threading.Thread(target=self._validate_path_async, args=(path_data,))
             validation_thread.daemon = True
             validation_thread.start()
-            self.grid.set_path_highlight(queued_path)
     
     def _handle_key_press(self, key):
         """Handle keyboard input."""
@@ -160,6 +164,8 @@ class GameEngine:
                 approved_path = [tuple(p) for p in result.get("approved_path", [])]
                 if approved_path:
                     print("Exploration path validated by server!")
+                    # Start movement with the validated path
+                    self.state.is_moving = True
                 else:
                     print("Server rejected exploration path")
                     # Visual feedback
@@ -172,8 +178,12 @@ class GameEngine:
                     self.grid.set_path_highlight([])
             else:
                 print("Async validation failed, continuing with local path")
+                # Use the locally calculated path as fallback
+                self.state.is_moving = True
         except requests.exceptions.RequestException as e:
             print(f"Async server error: {e}, continuing with local path")
+            # Use the locally calculated path as fallback
+            self.state.is_moving = True
     
     def update_game_state(self, dt):
         """Update all game state components."""
@@ -197,17 +207,44 @@ class GameEngine:
             if self.rejected_path:
                 self.rejected_path = []
         
-        # Path-following movement handled by CombatSystem for lockstep execution
-        self.combat_system.update_positions(dt, self.grid.hex_size, self.screen, self.MOVE_SPEED)
-        
-        # Enemy path-following movement and attacks
+        # Player movement in exploration mode (handled separately from combat system)
+        if self.state.game_mode == 'exploration' and self.state.is_moving:
+            target_hex = self.state.queued_path[self.state.current_path_index]
+            target_screen = self._hex_to_screen(target_hex[0], target_hex[1], self.grid.hex_size, self.screen)
+            dx = target_screen[0] - self.state.char_screen_pos[0]
+            dy = target_screen[1] - self.state.char_screen_pos[1]
+            dist = (dx**2 + dy**2)**0.5
+
+            if dist < 5:  # Arrived at target hex
+                self.state.char_screen_pos = [target_screen[0], target_screen[1]]
+                self.state.player_pos = [target_hex[0], target_hex[1]]
+                self.state.current_path_index += 1
+                print(f"Player reached hex: {target_hex}")
+            else:
+                # LERP movement
+                t = min(1.0, (self.MOVE_SPEED * dt) / dist)
+                self.state.char_screen_pos[0] += dx * t
+                self.state.char_screen_pos[1] += dy * t
+
+            if self.state.current_path_index >= len(self.state.queued_path):
+                self.state.is_moving = False
+                self.state.queued_path = []
+                self.grid.set_path_highlight([])
+                # Check win condition after movement
+                self.state.check_win_condition(time.time())
+
+        # Path-following movement handled by CombatSystem for lockstep execution in combat mode
+        if self.state.game_mode == 'combat':
+            self.combat_system.update_positions(dt, self.grid.hex_size, self.screen, self.MOVE_SPEED)
+
+        # Enemy path-following movement and attacks (in both exploration and combat modes)
         for enem in self.enemies:
             if enem.hp > 0:
                 # Update enemy movement if they have a path
                 if enem.is_moving and enem.queued_path and enem.current_path_index < len(enem.queued_path):
                     enemy_path_complete = enem.update_movement(self.grid.hex_size, self.screen, self.MOVE_SPEED, dt)
-                    # Attack if path complete and within range
-                    if enemy_path_complete and enem.hp > 0:
+                    # Attack if path complete and within range (only in exploration mode for now)
+                    if enemy_path_complete and enem.hp > 0 and self.state.game_mode == 'exploration':
                         dist = hex_distance(enem.pos[0], enem.pos[1], self.state.player_pos[0], self.state.player_pos[1])
                         if not self.state.defeated and (dist == 1 or (dist <= 3 and ENEMY_RANGED_ATTACK_ENABLED)):
                             # No more attacks on dead player
@@ -226,10 +263,20 @@ class GameEngine:
         if self.state.game_mode == 'combat' and (time.time() - self.last_cr_start >= TICK_TIME):
             self.combat_system.execute_turn()
             self.last_cr_start = time.time()  # Reset timer
-        
-        # Enemy AI: Use AISystem for modular behavior, only in combat mode to reduce spam
-        if self.state.game_mode == 'combat':
-            # Update enemy AI decisions
+
+        # Enemy AI: Use AISystem for modular behavior in both modes
+        if self.state.game_mode == 'exploration':
+            # In exploration mode, enemies move independently with simple AI
+            for enem in self.enemies:
+                if enem.hp > 0 and not enem.is_moving:
+                    dist = hex_distance(enem.pos[0], enem.pos[1], self.state.player_pos[0], self.state.player_pos[1])
+                    # Simple chase behavior in exploration mode
+                    if dist <= 5:  # Chase if within range
+                        path = enem.calculate_ai_path(self.state.player_pos, self.grid.tiles, self.enemies, 'chase')
+                        if path and len(path) > 0:
+                            enem.start_movement(path)
+        elif self.state.game_mode == 'combat':
+            # Update enemy AI decisions for combat mode
             actions = self.ai_system.decide_actions_batch(self.enemies, self.state.player_pos)
             for enem, path, attack in actions:
                 enem.planned_path = path
