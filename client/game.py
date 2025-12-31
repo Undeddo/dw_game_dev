@@ -61,7 +61,7 @@ class GameEngine:
         # Initialize enemies with proper stats
         self.enemies = [
             Enemy(start_pos=(0, 1), mv_limit=6),
-            Enemy(start_pos=(1, 3), mv_limit=6),
+            #Enemy(start_pos=(1, 3), mv_limit=6),
         ]  # Multiple enemies for more challenge
         
         # Centralize state in GameState (reduces globals; see client/game_state.py)
@@ -246,7 +246,8 @@ class GameEngine:
                     # Attack if path complete and within range (only in exploration mode for now)
                     if enemy_path_complete and enem.hp > 0 and self.state.game_mode == 'exploration':
                         dist = hex_distance(enem.pos[0], enem.pos[1], self.state.player_pos[0], self.state.player_pos[1])
-                        if not self.state.defeated and (dist == 1 or (dist <= 3 and ENEMY_RANGED_ATTACK_ENABLED)):
+                        # Only aggressive enemies can attack during exploration
+                        if enem.is_aggressive and not self.state.defeated and (dist == 1 or (dist <= 3 and ENEMY_RANGED_ATTACK_ENABLED)):
                             # No more attacks on dead player
                             if dist == 1:
                                 damage = roll_d6()

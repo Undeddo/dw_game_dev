@@ -53,6 +53,7 @@ class Enemy:
         self.retreat_threshold = 0.3  # Retreat if HP below this percentage (0.3 = 30%)
         self.targeting_player = False  # True if this enemy is targeting the player
         self.attack_this_turn = False  # Flag for whether enemy should attack this turn
+        self.is_aggressive = False  # Whether enemy can attack during exploration mode
 
     def set_screen_pos(self, screen_pos):
         """
