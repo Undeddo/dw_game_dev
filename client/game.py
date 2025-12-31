@@ -125,9 +125,14 @@ class GameEngine:
             # Store the path in game state immediately for local use
             self.state.queued_path = queued_path
             self.state.current_path_index = 0
+
+            # Set new path highlight (this will replace any existing highlight)
             self.grid.set_path_highlight(queued_path)
 
-            # Validate path with server asynchronously
+            # START MOVEMENT IMMEDIATELY with local path
+            self.state.is_moving = True
+
+            # Validate path with server asynchronously (can still reject/revert if needed)
             path_data = {
                 "start": self.state.player_pos,
                 "end": clicked_hex,
@@ -178,11 +183,11 @@ class GameEngine:
                     self.grid.set_path_highlight([])
             else:
                 print("Async validation failed, continuing with local path")
-                # Use the locally calculated path as fallback
+                # Use the locally calculated path as fallback - START MOVEMENT
                 self.state.is_moving = True
         except requests.exceptions.RequestException as e:
             print(f"Async server error: {e}, continuing with local path")
-            # Use the locally calculated path as fallback
+            # Use the locally calculated path as fallback - START MOVEMENT
             self.state.is_moving = True
     
     def update_game_state(self, dt):
@@ -229,7 +234,7 @@ class GameEngine:
             if self.state.current_path_index >= len(self.state.queued_path):
                 self.state.is_moving = False
                 self.state.queued_path = []
-                self.grid.set_path_highlight([])
+                # Don't clear path highlight - keep it visible until new path is set or cancelled
                 # Check win condition after movement
                 self.state.check_win_condition(time.time())
 
@@ -271,6 +276,9 @@ class GameEngine:
             for enem in self.enemies:
                 if enem.hp > 0 and not enem.is_moving:
                     dist = hex_distance(enem.pos[0], enem.pos[1], self.state.player_pos[0], self.state.player_pos[1])
+                    # Skip path calculation if already adjacent (distance <= 1)
+                    if dist <= 1:
+                        continue
                     # Simple chase behavior in exploration mode
                     if dist <= 5:  # Chase if within range
                         path = enem.calculate_ai_path(self.state.player_pos, self.grid.tiles, self.enemies, 'chase')
