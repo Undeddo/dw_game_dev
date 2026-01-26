@@ -171,35 +171,14 @@ class CombatSystem:
 
     def update_positions(self, dt, grid_hex_size, screen, move_speed):
         """
-        Called every frame: Handle LERP movement for player and enemies during execution.
-        - Mirrors game's update path-following but centralized here.
+        Called every frame: Handle LERP movement for enemies during execution.
+        Player movement is now handled by game_controller to avoid conflicts.
         """
-        # Player movement
-        if self.state.is_moving and self.state.queued_path and self.state.current_path_index < len(self.state.queued_path):
-            target_hex = self.state.queued_path[self.state.current_path_index]
-            target_screen = self._hex_to_screen(target_hex[0], target_hex[1], grid_hex_size, screen)
-            dx = target_screen[0] - self.state.char_screen_pos[0]
-            dy = target_screen[1] - self.state.char_screen_pos[1]
-            dist = (dx**2 + dy**2)**0.5
-            if dist < 5:  # Arrived
-                self.state.char_screen_pos = [target_screen[0], target_screen[1]]
-                self.state.player_pos = [target_hex[0], target_hex[1]]
-                self.state.current_path_index += 1
-                print(f"Player reached hex: {target_hex}")
-            else:  # LERP
-                t = min(1.0, (move_speed * dt) / dist)
-                self.state.char_screen_pos[0] += dx * t
-                self.state.char_screen_pos[1] += dy * t
-
-        if self.state.queued_path and self.state.current_path_index >= len(self.state.queued_path):
-            self.state.queued_path = []
-            self.state.current_path_index = 0
-            self.state.is_moving = False
-
         # Enemy movements (each completes independently but simultaneously)
+        # Note: Enemy.update_movement() now takes only dt parameter
         for enem in self.state.enemies:
             if enem.hp > 0:
-                enem.update_movement(grid_hex_size, screen, move_speed, dt)
+                enem.update_movement(dt)
 
     def _hex_to_screen(self, q, r, size, screen):
         """Quick local hex conversion."""

@@ -1,6 +1,29 @@
 import pygame
 import random
 
+def draw_health_bar(screen, x, y, current_hp, max_hp, color=(255, 0, 0), bar_width=40, bar_height=6):
+    """
+    Draw a health bar above an entity.
+    
+    Args:
+        screen: Pygame screen surface
+        x: Center x position of the bar
+        y: Top y position of the bar
+        current_hp: Current health value
+        max_hp: Maximum health value
+        color: Color of the health bar (default red)
+        bar_width: Width of the health bar (default 40)
+        bar_height: Height of the health bar (default 6)
+    """
+    # Draw background bar outline
+    pygame.draw.rect(screen, (0, 0, 0), (x - bar_width // 2, y - 20, bar_width, bar_height), 1)
+    
+    # Calculate health ratio
+    hp_ratio = max(0, min(1, current_hp / max_hp))
+    
+    # Draw filled portion
+    pygame.draw.rect(screen, color, (x - bar_width // 2, y - 20, int(bar_width * hp_ratio), bar_height))
+
 def draw_sand_clock(screen, clock_x, clock_y, size, progress, font, combat_round):
     """Draw the combat sand clock (hourglass) with proper wide-top-narrow-middle-wide-bottom shape."""
     # Draw bottom triangle (pointing up: narrow at top, wide at bottom)

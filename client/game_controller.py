@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 import pygame
 import time
+import math
 import threading
 from client.map.hex_grid import HexGrid
 from core.config import TICK_TIME, SERVER_URL, ENEMY_RANGED_ATTACK_ENABLED
@@ -25,6 +26,7 @@ from client.game_state import GameState
 from client.ai_system import AISystem
 from client.combat_system import CombatSystem
 from client.input_handler import InputHandler
+from client.movement_controller import MovementController
 
 class GameController:
     """
@@ -56,11 +58,25 @@ class GameController:
             Enemy(start_pos=(1, 3), mv_limit=6),
         ]
         
+        # Initialize movement controller
+        self.movement_controller = MovementController(
+            grid=self.grid.tiles,
+            hex_size=self.grid.hex_size,
+            screen_width=self.SCREEN_WIDTH,
+            screen_height=self.SCREEN_HEIGHT
+        )
+        
+        # Set movement controller for all enemies
+        for enem in self.enemies:
+            enem.set_movement_controller(self.movement_controller)
+        
         # Centralize state in GameState (reduces globals; see client/game_state.py)
+        # Calculate initial screen position from player's hex position
+        initial_screen_pos = self.movement_controller.hex_to_screen(0, 0)
         self.state = GameState(
             enemies=self.enemies,
             goal_pos=(9, 9),
-            char_screen_pos=[self.screen.get_width() // 2, self.screen.get_height() // 2],
+            char_screen_pos=list(initial_screen_pos),
             mv_limit=6
         )
         
@@ -100,7 +116,11 @@ class GameController:
             if event.type == pygame.QUIT:
                 self.running = False
             elif event.type == pygame.MOUSEBUTTONDOWN:
-                self.input_handler.handle_mouse_click(event.pos, self.state, self.grid, self.enemies)
+                # DEBUG: Store last mouse click position and coordinates
+                self.last_mouse_click = list(event.pos)
+                mouse_hex = self.movement_controller.screen_to_hex(*event.pos)
+                print(f"Mouse clicked at screen pos: {event.pos}, hex: {mouse_hex}")
+                self.input_handler.handle_mouse_click(event.pos, self.state, self.grid, self.enemies, self.screen)
             elif event.type == pygame.KEYDOWN:
                 self.input_handler.handle_keydown(event.key, self.state, self.grid)
     
@@ -109,14 +129,16 @@ class GameController:
         # Update character renderer
         self.char_renderer.update(dt, self.state.is_moving)
         
+        # Update player movement if moving
+        if self.state.is_moving:
+            self._update_player_movement(dt)
+        
         # Update enemy screen positions only if not currently moving
         for enem in self.enemies:
             if enem.hp > 0 and not enem.is_moving:
-                enemy_screen_pos = self.grid.hex_to_pixel(enem.pos[0], enem.pos[1])
-                # Convert to screen coordinates
-                screen_x = enemy_screen_pos[0] + self.screen.get_width() // 2
-                screen_y = enemy_screen_pos[1] + self.screen.get_height() // 2
-                enem.set_screen_pos((screen_x, screen_y))
+                # Use movement controller for consistent coordinate conversion
+                enemy_screen_pos = self.movement_controller.hex_to_screen(enem.pos[0], enem.pos[1])
+                enem.set_screen_pos((enemy_screen_pos[0], enemy_screen_pos[1]))
         
         # Update combat system positions
         self.combat_system.update_positions(dt, self.grid.hex_size, self.screen, self.MOVE_SPEED)
@@ -133,13 +155,75 @@ class GameController:
         # Check win condition
         self.state.check_win_condition(current_time)
     
+    def _update_player_movement(self, dt):
+        """Update player movement along the queued path."""
+        # DEBUG: Print movement state
+        print(f"DEBUG: is_moving={self.state.is_moving}, path_validated={self.state.path_validated}")
+
+        if not self.state.is_moving or not self.state.path_validated:
+            return
+
+        # Get current path
+        path = self.state.queued_path
+        if not path:
+            print("DEBUG: No path to move along")
+            self.state.is_moving = False
+            return
+
+        # Get current path index
+        path_index = self.state.current_path_index
+
+        # Check if we've reached the end of the path
+        if path_index >= len(path):
+            print(f"DEBUG: Path complete! Current position: {tuple(self.state.player_pos)}")
+            self.state.is_moving = False
+            self.state.queued_path = []
+            self.state.current_path_index = 0
+            return
+
+        # Get target hex
+        target_hex = path[path_index]
+
+        # DEBUG: Print movement details
+        print(f"DEBUG: Moving from {tuple(self.state.player_pos)} to {target_hex}, index={path_index}/{len(path)}")
+
+        # Calculate target screen position using movement controller (consistent with initialization)
+        target_screen = self.movement_controller.hex_to_screen(*target_hex)
+
+        # Get current screen position
+        current_screen = list(self.state.char_screen_pos)
+
+        # Calculate distance to target
+        dx = target_screen[0] - current_screen[0]
+        dy = target_screen[1] - current_screen[1]
+        dist = math.hypot(dx, dy)
+
+        print(f"DEBUG: Distance to target: {dist:.2f}, dt={dt:.4f}")
+
+        if dist < 10:  # Close enough to snap to target
+            # Snap to exact center of target hex
+            self.state.char_screen_pos = list(target_screen)
+            # Convert tuple to list for storage (maintain GameState's mutable design)
+            self.state.player_pos = [target_hex[0], target_hex[1]]
+            self.state.current_path_index += 1
+            print(f"DEBUG: Player snapped to hex {target_hex}")
+        else:
+            # Move towards target
+            t = min(1.0, (self.MOVE_SPEED * dt) / dist)
+            current_screen[0] += dx * t
+            current_screen[1] += dy * t
+            self.state.char_screen_pos = current_screen
+            print(f"DEBUG: Moved {t*dist:.2f} pixels towards target")
+    
     def _handle_enemy_attacks_and_movement(self, current_time):
         """Handle enemy attacks and movement after path completion."""
+        dt = self.clock.get_time() / 1000.0
+        
         for enem in self.enemies:
             if enem.hp > 0:
-                # Update enemy movement if they have a path
-                if enem.is_moving and enem.queued_path and enem.current_path_index < len(enem.queued_path):
-                    enemy_path_complete = enem.update_movement(self.grid.hex_size, self.screen, self.MOVE_SPEED, self.clock.get_time() / 1000.0)
+                # Update enemy movement using movement controller
+                if enem.is_moving:
+                    enemy_path_complete = enem.update_movement(dt)
                     
                     # Attack if path complete and within range
                     if enemy_path_complete and enem.hp > 0:
@@ -172,7 +256,32 @@ class GameController:
         """Draw the entire game state."""
         self.screen.fill((0, 0, 0))
         self.grid.draw(self.screen)
-        
+
+        # DEBUG: Draw player position indicator (red square)
+        pygame.draw.rect(self.screen, (255, 0, 0), (
+            int(self.state.char_screen_pos[0]) - 8,
+            int(self.state.char_screen_pos[1]) - 8,
+            16, 16
+        ))
+
+        # DEBUG: Draw player hex coordinates text
+        pos_text = self.font.render(f"Player Hex: {tuple(self.state.player_pos)}", True, (255, 0, 0))
+        self.screen.blit(pos_text, (10, 80))
+
+        # DEBUG: Draw mouse position when clicked
+        if hasattr(self, 'last_mouse_click') and self.last_mouse_click:
+            mouse_hex = self.movement_controller.screen_to_hex(*self.last_mouse_click)
+            if mouse_hex:
+                mouse_text = self.font.render(f"Mouse Click Hex: {mouse_hex}", True, (0, 255, 0))
+                self.screen.blit(mouse_text, (10, 110))
+
+        # DEBUG: Draw path visualization
+        if hasattr(self, 'last_mouse_click') and self.state.queued_path:
+            for i, hex_pos in enumerate(self.state.queued_path):
+                screen_pos = self.movement_controller.hex_to_screen(hex_pos[0], hex_pos[1])
+                color = (0, 255, 255) if i == self.state.current_path_index else (0, 180, 255)
+                pygame.draw.circle(self.screen, color, (int(screen_pos[0]), int(screen_pos[1])), 4)
+
         # Draw character
         self.char_renderer.draw_character(self.screen, int(self.state.char_screen_pos[0]), int(self.state.char_screen_pos[1]))
         
@@ -262,20 +371,18 @@ class GameController:
     
     def _draw_goal_star(self):
         """Draw the quest goal star."""
-        goal_screen = self.grid.hex_to_pixel(self.state.goal_pos[0], self.state.goal_pos[1])
-        # Convert to screen coordinates
-        screen_x = goal_screen[0] + self.screen.get_width() // 2
-        screen_y = goal_screen[1] + self.screen.get_height() // 2
-        
+        # Use movement controller for consistent coordinate conversion
+        goal_screen = self.movement_controller.hex_to_screen(self.state.goal_pos[0], self.state.goal_pos[1])
+
         pygame.draw.polygon(self.screen, (255, 255, 0), [  # Yellow star for goal
-            (screen_x, screen_y - 15),
-            (screen_x + 6, screen_y - 5),
-            (screen_x + 15, screen_y + 2),
-            (screen_x + 6, screen_y + 9),
-            (screen_x, screen_y + 15),
-            (screen_x - 6, screen_y + 9),
-            (screen_x - 15, screen_y + 2),
-            (screen_x - 6, screen_y - 5),
+            (goal_screen[0], goal_screen[1] - 15),
+            (goal_screen[0] + 6, goal_screen[1] - 5),
+            (goal_screen[0] + 15, goal_screen[1] + 2),
+            (goal_screen[0] + 6, goal_screen[1] + 9),
+            (goal_screen[0], goal_screen[1] + 15),
+            (goal_screen[0] - 6, goal_screen[1] + 9),
+            (goal_screen[0] - 15, goal_screen[1] + 2),
+            (goal_screen[0] - 6, goal_screen[1] - 5),
         ])
     
     def _draw_combat_ui(self, current_time):
